@@ -1,15 +1,41 @@
 /**
- * Events API (AC-16)
+ * Events API (AC-16 + AC-17)
  *
  * POST /events — products から event envelope を受けて EventLog に append。
  * 202 Accepted で async 処理、 400 で validation 違反、 409 で idempotency 衝突。
+ * 401 で auth 不在、 403 で scope 不足。
+ *
  * 実際の storage 反映は consumer (consumer.ts) が行う。
  */
 import { Hono } from 'hono'
+import { requireAuth, type Verifier } from './auth.js'
 import { type EventLog, validateEnvelope } from './event-log.js'
 
-export function createEventsApp(log: EventLog) {
+export interface EventsAppOptions {
+  log: EventLog
+  /** optional: 指定時は auth middleware を掛ける (推奨) */
+  verifier?: Verifier
+  /** app token に要求する scope (default: ['register_resource']) */
+  requiredScopes?: string[]
+}
+
+export function createEventsApp(options: EventsAppOptions | EventLog) {
   const app = new Hono()
+
+  // Back-compat: EventLog を直接渡された場合は auth なしで動く (dev only)
+  const opts: EventsAppOptions =
+    'append' in options ? { log: options } : options
+
+  if (opts.verifier) {
+    app.use(
+      '/events',
+      requireAuth({
+        verifier: opts.verifier,
+        accept: ['user', 'app'],
+        requiredScopes: opts.requiredScopes ?? ['register_resource'],
+      })
+    )
+  }
 
   app.post('/events', async c => {
     let body: unknown
@@ -27,7 +53,7 @@ export function createEventsApp(log: EventLog) {
       )
     }
 
-    const result = await log.append(validation.envelope)
+    const result = await opts.log.append(validation.envelope)
     if (!result.accepted) {
       return c.json(
         { error: 'conflict', reason: result.reason ?? 'duplicate' },
