@@ -1,0 +1,19 @@
+{
+  "name": "@chronista-hub/server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Chronista Hub server — World Tree registry (Hono + Bun)",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "bun --watch run src/index.ts",
+    "start": "bun run src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
