@@ -1,23 +1,33 @@
 /**
- * Chronista Hub Server (AC-14 Phase 1-1 scaffold)
+ * Chronista Hub Server
  *
- * World Tree meta-registry backend。 現 phase は skeleton のみ、 後続 sub-issue で:
- *   - AC-15: Tree read API v1 (GET /v1/tree/@{handle}/... 等)
+ * World Tree meta-registry backend。 Phase 進行:
+ *   - AC-14: scaffold + /health (Done)
+ *   - AC-15: Tree read API v1 (/v1/tree/@{handle}/... 等) (本 commit)
  *   - AC-16: Event-sourced ingestion (POST /v1/events + consumer)
  *   - AC-17: Auth middleware (Creo ID JWKS + product app-token)
  *   - AC-18: Memories hub-sync (pilot integration)
  */
 import { Hono } from 'hono'
 import { createHealthApp, type HealthInfo } from './health.js'
+import { InMemoryStorage, type Storage } from './storage.js'
+import { createTreeApp } from './tree.js'
 
 const SERVICE_NAME = 'chronista-hub'
 const VERSION = '0.0.1'
 
-export function createApp(
-  info: HealthInfo = { name: SERVICE_NAME, version: VERSION }
-) {
+export interface AppOptions {
+  info?: HealthInfo
+  storage?: Storage
+}
+
+export function createApp(options: AppOptions = {}) {
+  const info = options.info ?? { name: SERVICE_NAME, version: VERSION }
+  const storage = options.storage ?? new InMemoryStorage()
+
   const app = new Hono()
   app.route('/health', createHealthApp(info))
+  app.route('/v1', createTreeApp(storage))
   app.get('/', c => c.json({ service: info.name, version: info.version }))
   return app
 }
