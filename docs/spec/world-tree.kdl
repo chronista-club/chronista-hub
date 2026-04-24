@@ -1,0 +1,297 @@
+// ============================================================================
+// Chronista Hub — World Tree Spec v0.1
+// ----------------------------------------------------------------------------
+// Creo ID / 各 product 横断の stateful resource meta-registry 仕様。
+// 2026-04-24 session で確定した architectural decision の primary artifact。
+//
+// Linear Epic: https://linear.app/chronista/issue/AC-10
+// Linear Phase 0: https://linear.app/chronista/issue/AC-11
+// Memory: chronista-hub-ownership.md (decision 原典)
+// ============================================================================
+
+meta {
+    version "0.1"
+    domain "chronista.club"
+    title "Chronista Hub — World Tree"
+    description "Identity + stateful resource meta-registry for Chronista ecosystem"
+    status "draft"
+    api-path-prefix "/v1"
+}
+
+// ---- Path schema -----------------------------------------------------------
+
+path-schema {
+    root "/@{handle}"
+    reserved-slug "identity"
+    reserved-slug "apps"
+    reserved-slug "world"
+    reserved-slug ".well-known"
+    separator "/"
+    handle-pattern #"^[a-z0-9][a-z0-9-]{0,30}$"#
+}
+
+// ---- Base shape (全 resource 共通) ----------------------------------------
+
+resource-base {
+    field "id"         uuid      required=#true description="UUID v7 (time-sortable)"
+    field "type"       string    required=#true description="resource-type の slug"
+    field "owner"      ref       target="user"  description="user handle への参照"
+    field "visibility" enum      default="private" {
+        value "private" description="owner のみ"
+        value "shared"  description="明示 audience のみ"
+        value "public"  description="全 visitor"
+    }
+    field "created_at" timestamp required=#true
+    field "updated_at" timestamp
+    field "path"       string    pattern=#"^/@[a-z0-9-]+/.+"# description="canonical URL path"
+}
+
+// ---- Sync protocol ---------------------------------------------------------
+
+sync-protocol {
+    default     "event-sourced"
+    fallback    "webhook"
+    consistency "eventual"
+
+    event-schema {
+        field "event_id"    uuid      required=#true
+        field "app_id"      string    required=#true
+        field "kind"        enum {
+            value "resource.created"
+            value "resource.updated"
+            value "resource.deleted"
+        }
+        field "resource"    block     description="resource payload (resource-base + payload)"
+        field "idempotency" string    description="同 event 多重送信に対する guard key"
+        field "emitted_at"  timestamp required=#true
+    }
+}
+
+// ---- Auth model ------------------------------------------------------------
+
+auth {
+    // Creo ID を OIDC provider として使用
+    oidc-issuer    "https://id.creo-memories.in"
+    oidc-jwks-uri  "https://id.creo-memories.in/.well-known/jwks.json"
+
+    product-token {
+        // product が Hub に resource register する時の credential
+        kind "app-token"
+        scope-registry {
+            scope "register:resource"  description="resource の create / update"
+            scope "delete:resource"    description="resource 削除"
+            scope "read:public"        description="public visibility のみ読取"
+        }
+    }
+
+    user-token {
+        // user が自分の subtree を触る credential
+        kind "user-jwt"
+        issuer "creo-id"
+        audiences "chronista-hub"
+    }
+}
+
+// ============================================================================
+// Core resource: user (tree root)
+// ============================================================================
+
+resource-type "user" {
+    slug "@{handle}"
+    ownership "creo-id"  // Creo ID 側が primary owner、 Hub は index
+
+    payload {
+        field "handle"       string required=#true pattern=#"^[a-z0-9][a-z0-9-]{0,30}$"#
+        field "email"        string required=#true
+        field "display_name" string
+        field "avatar_url"   string
+        field "bio"          string
+        field "locale"       string default="ja"
+    }
+
+    subtree {
+        child "identity" cardinality="1" owner="creo-id" description="provider / session state"
+
+        // Products が register する subtree
+        child "vp/worlds"          product="vp"            ownership="index-only"
+        child "memories/atlases"   product="creo-memories" ownership="index-only"
+        child "cplp/sessions"      product="cplp"          ownership="index-only"
+        child "fleetstage/tenants" product="fleetstage"    ownership="index-only"
+        child "gfp/shipments"      product="gfp"           ownership="index-only"
+    }
+}
+
+// ============================================================================
+// Product manifests
+// ============================================================================
+
+product "creo-memories" {
+    name "Creo Memories"
+    description "Memory storage with hybrid SurrealDB + Qdrant backend"
+    home-url "https://creo-memories.in"
+    manifest-url "https://creo-memories.in/.well-known/chronista-hub-manifest"
+    scope "register:resource"
+    scope "delete:resource"
+}
+
+product "vp" {
+    name "Vantage Point"
+    description "Canvas-based parallel agent orchestration"
+    home-url "https://vp.creo-memories.in"
+    manifest-url "https://vp.creo-memories.in/.well-known/chronista-hub-manifest"
+    scope "register:resource"
+    scope "delete:resource"
+}
+
+product "cplp" {
+    name "CPLP Sound System"
+    description "Session-based music / sound collaboration"
+    manifest-url "https://cplp.creo-memories.in/.well-known/chronista-hub-manifest"
+    scope "register:resource"
+}
+
+product "fleetstage" {
+    name "Fleetstage Cloud"
+    description "Container orchestration deployment layer"
+    manifest-url "https://fleetstage.cloud/.well-known/chronista-hub-manifest"
+    scope "register:resource"
+}
+
+product "gfp" {
+    name "Go Fast Packing"
+    description "Shipment logistics tracking"
+    manifest-url "https://gofast.packaging/.well-known/chronista-hub-manifest"
+    scope "register:resource"
+}
+
+// ============================================================================
+// Resource types (各 product が register する)
+// ============================================================================
+
+resource-type "memories-atlas" {
+    product   "creo-memories"
+    slug      "memories/atlases/{atlas_id}"
+    ownership "index-only"
+    sync      "event-sourced"
+
+    payload {
+        field "atlas_id"    string required=#true description="EntId (creo-memories 側 primary key)"
+        field "title"       string required=#true
+        field "description" string
+        field "memory_count" int
+        field "visibility"  enum-ref="resource-base.visibility"
+    }
+}
+
+resource-type "vp-world" {
+    product   "vp"
+    slug      "vp/worlds/{world_id}"
+    ownership "index-only"
+    sync      "event-sourced"
+
+    payload {
+        field "world_id"          string required=#true
+        field "title"             string required=#true
+        field "description"       string
+        field "tmux_session_name" string
+        field "actors" list {
+            element ref target="actor"
+        }
+    }
+}
+
+resource-type "cplp-session" {
+    product   "cplp"
+    slug      "cplp/sessions/{session_id}"
+    ownership "index-only"
+    sync      "event-sourced"
+
+    payload {
+        field "session_id"   string required=#true
+        field "title"        string required=#true
+        field "started_at"   timestamp required=#true
+        field "ended_at"     timestamp
+        field "participants" list {
+            element ref target="user"
+        }
+        field "bpm"          int
+        field "key"          string
+    }
+}
+
+resource-type "fleetstage-tenant" {
+    product   "fleetstage"
+    slug      "fleetstage/tenants/{tenant_id}"
+    ownership "index-only"
+    sync      "event-sourced"
+
+    payload {
+        field "tenant_id"  string required=#true
+        field "title"      string required=#true
+        field "fleet_count" int
+        field "region"     string
+    }
+}
+
+resource-type "gfp-shipment" {
+    product   "gfp"
+    slug      "gfp/shipments/{shipment_id}"
+    ownership "index-only"
+    sync      "event-sourced"
+
+    payload {
+        field "shipment_id" string required=#true
+        field "origin"      string
+        field "destination" string
+        field "status"      enum {
+            value "booked"
+            value "in-transit"
+            value "delivered"
+            value "exception"
+        }
+        field "eta"         timestamp
+    }
+}
+
+// ============================================================================
+// App manifest (3rd party / 1st party 共通)
+// ============================================================================
+
+resource-type "app" {
+    slug "apps/{app_id}"
+    ownership "hub"  // Hub 自身が管理
+
+    payload {
+        field "app_id"      string  required=#true
+        field "name"        string  required=#true
+        field "description" string
+        field "icon_url"    string
+        field "home_url"    string
+        field "scopes" list {
+            element string
+        }
+        field "verified" bool default=#false
+    }
+}
+
+// ============================================================================
+// Codegen hints (future)
+// ============================================================================
+
+codegen {
+    target "typescript" {
+        emit-path "packages/chronista-hub-client/src/types.ts"
+        type-prefix "Hub"
+    }
+    target "rust" {
+        emit-path "crates/chronista-hub-client/src/types.rs"
+        mod-name "hub_types"
+    }
+    target "ruby" {
+        emit-path "lib/chronista_hub/types.rb"
+        module-name "ChronistaHub::Types"
+    }
+    target "surrealql" {
+        emit-path "apps/chronista-hub-server/migrations/001_hub_schema.surql"
+    }
+}
