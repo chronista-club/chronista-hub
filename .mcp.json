@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "vantage-point": {
+      "type": "stdio",
+      "command": "vp",
+      "args": ["mcp"]
+    },
+    "fleetflow": {
+      "type": "stdio",
+      "command": "fleet",
+      "args": ["mcp"]
+    }
+  }
+}
