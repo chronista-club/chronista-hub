@@ -44,5 +44,5 @@ ADR は spec ↔ memory の橋。 spec を読んで "なぜ?" と思ったら AD
 |---|---|---|---|---|
 | [ADR-001](./ADR-001-monorepo-strategy.md) | Monorepo strategy | Accepted | 2026-04-25 | — |
 | [ADR-002](./ADR-002-creo-id-identity-delegation.md) | Identity delegation to Creo ID (G1) | Accepted | 2026-04-25 | gap G1, G8 |
-| [ADR-003](./ADR-003-api-surface-rest-cursor.md) | REST API surface with cursor pagination (G2) | Accepted | 2026-04-25 | gap G2 |
+| [ADR-003](./ADR-003-api-surface-rest-cursor.md) | REST API surface with cursor pagination (G2) | Accepted (target, MVP subset landed in AC-15) | 2026-04-25 | gap G2 |
 | [ADR-004](./ADR-004-event-sync-reliability.md) | Event sync reliability (G3) | Accepted | 2026-04-25 | gap G3 |
