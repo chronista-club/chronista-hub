@@ -46,3 +46,13 @@ ADR は spec ↔ memory の橋。 spec を読んで "なぜ?" と思ったら AD
 | [ADR-002](./ADR-002-creo-id-identity-delegation.md) | Identity delegation to Creo ID (G1) | Accepted | 2026-04-25 | gap G1, G8 |
 | [ADR-003](./ADR-003-api-surface-rest-cursor.md) | REST API surface with cursor pagination (G2) | Accepted (target, MVP subset landed in AC-15) | 2026-04-25 | gap G2 |
 | [ADR-004](./ADR-004-event-sync-reliability.md) | Event sync reliability (G3) | Accepted | 2026-04-25 | gap G3 |
+| [ADR-005](./ADR-005-tombstone-and-gdpr.md) | Soft delete tombstone + GDPR purge (G4) | Accepted | 2026-04-25 | gap G4 |
+| [ADR-006](./ADR-006-scope-granularity.md) | Scope granularity — dotted OAuth notation (G5) | Accepted | 2026-04-25 | gap G5 |
+| [ADR-007](./ADR-007-dangling-refs-and-vp-actor.md) | Dangling refs resolution + vp-actor (G7) | Accepted | 2026-04-25 | gap G7 |
+| [ADR-008](./ADR-008-owner-primary-key-usrid.md) | Owner primary key — `usr_id` (EntId) + handle display (G8) | Accepted | 2026-04-25 | gap G1, G8 |
+| [ADR-009](./ADR-009-product-manifest-schema.md) | Product manifest schema (well-known JSON) (G6) | Accepted | 2026-04-25 | gap G6 |
+| [ADR-010](./ADR-010-auth-tokens-refresh-revocation.md) | Auth — token refresh, revocation, audience (G9) | Accepted | 2026-04-25 | gap G9 |
+| [ADR-011](./ADR-011-spec-versioning-semver.md) | Spec versioning — SemVer with pre-1.0 minor-breaking (G10) | Accepted | 2026-04-25 | gap G10 |
+| [ADR-012](./ADR-012-path-canonical-and-subdomain-reserve.md) | Path-based canonical URLs + subdomain reservation (G11) | Accepted | 2026-04-25 | gap G11 |
+| [ADR-013](./ADR-013-organization-shared-namespace.md) | Organization / team — shared `@handle` namespace (G12) | Accepted (Phase 1 reserve, Phase 2 impl) | 2026-04-25 | gap G12 |
+| [ADR-014](./ADR-014-observability-and-discovery.md) | Observability + Discovery (Phase 1-3 graded) (G13, G14) | Accepted | 2026-04-25 | gap G13, G14 |
