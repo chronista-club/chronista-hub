@@ -48,22 +48,44 @@ bun run check
 bun test
 ```
 
-## Workspace layout
+## Workspace layout (monorepo)
+
+2026-04-25 監修で **monorepo 一本化** 戦略に統合。 server / spec / KDL codegen tool を 1 repo に同居させて maintenance burden を最小化。
 
 ```
 chronista-hub/
 ├── apps/
-│   └── chronista-hub-server/  (future: Hono + Bun backend)
-├── packages/                   (future: shared libraries)
+│   └── chronista-hub-server/  (Hono + Bun backend)
+├── packages/                   (KDL spec → multi-target codegen pipeline)
+│   ├── kdl-parser/             (kdljs wrapper + typed AST)
+│   ├── codegen-ts/             (AST → TypeScript interface)
+│   ├── codegen-zod/            (AST → Zod schema + inferred type)
+│   ├── codegen-surql/          (AST → SurrealQL DEFINE 文)
+│   ├── codegen-rust/           (AST → Rust struct + serde)
+│   └── cli/                    (unified `kdl-schema gen` command)
+├── migrations/                 (SurrealQL schema migration、 codegen-surql 自動生成可能)
 └── docs/
     └── spec/                   (KDL spec v0.1 + README)
 ```
 
+## Codegen scripts
+
+`docs/spec/world-tree.kdl` を SSOT として 4 言語/層を自動生成:
+
+```bash
+bun run gen        # 全 4 target を generated/ に
+bun run gen:ts     # TypeScript interface → apps/chronista-hub-server/src/generated/
+bun run gen:zod    # Zod schema (runtime validation) → apps/chronista-hub-server/src/generated/
+bun run gen:surql  # SurrealQL DEFINE 文 → migrations/002_*.surql
+```
+
+CLI 単独実行も可能: `bun packages/cli/bin/kdl-schema.ts gen <input.kdl> --target <ts|zod|surql|rust|all> ...`
+
 ## Related
 
 - Linear Epic: [AC-10](https://linear.app/chronista/issue/AC-10) Chronista Hub — World Tree MVP service
-- Dependency: [`chronista-club/creo-id`](https://github.com/chronista-club/creo-id) — auth server (JWKS 提供元)
-- Spec tooling: [`chronista-club/kdl-schema`](https://github.com/chronista-club/kdl-schema) — KDL codegen (Phase 2 以降で activate)
+- Dependency: [`chronista-club/creo-id`](https://github.com/chronista-club/creo-id) — auth server (JWKS 提供元、 別 repo 維持)
+- Past separate repo: [`chronista-club/kdl-schema`](https://github.com/chronista-club/kdl-schema) — 2026-04-25 に本 repo へ absorb (archive 予定)
 
 ## License
 

@@ -1,0 +1,27 @@
+{
+  "name": "@kdl-schema/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Unified CLI for kdl-schema codegen — `kdl-schema gen --target <t>`",
+  "main": "src/index.ts",
+  "bin": {
+    "kdl-schema": "./bin/kdl-schema.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@kdl-schema/codegen-rust": "workspace:*",
+    "@kdl-schema/codegen-surql": "workspace:*",
+    "@kdl-schema/codegen-ts": "workspace:*",
+    "@kdl-schema/codegen-zod": "workspace:*",
+    "@kdl-schema/parser": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

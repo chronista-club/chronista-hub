@@ -1,0 +1,20 @@
+{
+  "name": "@kdl-schema/codegen-surql",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "AST → SurrealQL DEFINE TABLE / FIELD emit — 3rd codegen target",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@kdl-schema/parser": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
