@@ -1,0 +1,20 @@
+{
+  "name": "@kdl-schema/codegen-zod",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "AST → Zod schema emit — 2nd codegen target (sibling of codegen-ts)",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@kdl-schema/parser": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@kdl-schema/codegen-ts",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "AST → TypeScript interface emit — 1st codegen target",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@kdl-schema/parser": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

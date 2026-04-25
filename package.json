@@ -13,7 +13,11 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "format": "biome format --write .",
-    "check": "biome check --write ."
+    "check": "biome check --write .",
+    "gen": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target all --output-dir generated/",
+    "gen:ts": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target ts -o apps/chronista-hub-server/src/generated/world-tree.ts",
+    "gen:zod": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target zod -o apps/chronista-hub-server/src/generated/world-tree.schema.ts",
+    "gen:surql": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target surql -o migrations/002_hub_resource_from_spec.surql"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.8",
