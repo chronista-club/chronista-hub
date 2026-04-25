@@ -82,17 +82,9 @@ spec-versioning {
     semver-policy "pre-1.0-allows-minor-breaking"
 
     breaking-change-classifier {
-        breaking [
-            "field-remove" "field-rename" "field-required-without-default"
-            "field-type-change" "resource-type-remove" "resource-type-rename"
-            "scope-remove" "scope-rename" "endpoint-remove" "endpoint-rename"
-            "default-behavior-change"
-        ]
-        additive [
-            "field-add-optional" "endpoint-add" "scope-add"
-            "resource-type-add" "enum-value-add"
-        ]
-        cosmetic ["description-change" "comment-change" "ordering-change"]
+        breaking  "field-remove" "field-rename" "field-required-without-default" "field-type-change" "resource-type-remove" "resource-type-rename" "scope-remove" "scope-rename" "endpoint-remove" "endpoint-rename" "default-behavior-change"
+        additive  "field-add-optional" "endpoint-add" "scope-add" "resource-type-add" "enum-value-add"
+        cosmetic  "description-change" "comment-change" "ordering-change"
     }
 
     enum-evolution {
@@ -144,11 +136,7 @@ handle-namespace {
     style "shared"
     differentiator-field "account_type"
 
-    reserved-handles [
-        "chronista-club" "chronista" "creo-memories" "creo"
-        "vantage-point" "vp" "cplp" "fleetstage" "fleetflow"
-        "gfp" "go-fast-packing" "chronista-hub"
-    ]
+    reserved-handles  "chronista-club" "chronista" "creo-memories" "creo" "vantage-point" "vp" "cplp" "fleetstage" "fleetflow" "gfp" "go-fast-packing" "chronista-hub"
 }
 
 // ============================================================================
@@ -166,15 +154,10 @@ path-schema {
 
     subdomain-policy {
         wildcard-handle-subdomain "reserved-no-resolve"
-        system-subdomains [
-            "id" "api" "www" "admin" "docs" "status" "assets" "webhooks"
-        ]
+        system-subdomains  "id" "api" "www" "admin" "docs" "status" "assets" "webhooks"
     }
 
-    reserved-path-slug [
-        "identity" "apps" "world" ".well-known"
-        "api" "oauth" "errors" "static" "health" "_"
-    ]
+    reserved-path-slug  "identity" "apps" "world" ".well-known" "api" "oauth" "errors" "static" "health" "_"
 
     trailing-slash-policy {
         canonical "no-trailing"
@@ -201,8 +184,7 @@ path-schema {
 resource-base {
     field "id"          uuid      required=#true description="UUID v7 (time-sortable) or EntId"
     field "type"        string    required=#true description="resource-type の slug"
-    field "owner"       ref       target="user" key-field="usr_id"
-        description="EntId (例: usr_Fj7cx53h)、 rename に耐える stable key"
+    field "owner"       ref       target="user" key-field="usr_id" description="EntId (例: usr_Fj7cx53h)、 rename に耐える stable key"
     field "visibility"  enum      default="private" {
         value "private" description="owner のみ"
         value "shared"  description="明示 audience のみ"
@@ -240,7 +222,7 @@ api {
             param "type"    multiple=#true
             param "handle"
             param "product"
-            param "search-mode" enum-values=["keyword" "semantic" "hybrid"] default="hybrid"
+            param "search-mode" enum-values= "keyword" "semantic" "hybrid" default="hybrid"
         }
         endpoint "GET /products"                               auth="public"
     }
@@ -323,7 +305,7 @@ sync-protocol {
 
     retry {
         scheme                    "exponential-backoff"
-        backoff-schedule-seconds  [1 5 25 120 600 3600 21600]
+        backoff-schedule-seconds   1 5 25 120 600 3600 21600
         max-attempts              7
         dlq-on-exhaustion         #true
     }
@@ -412,7 +394,7 @@ auth {
     user-token {
         kind "user-jwt"
         issuer "creo-id"
-        audiences ["chronista-hub" "chronista-hub-admin" "chronista-hub-public" "chronista-hub-webhook"]
+        audiences  "chronista-hub" "chronista-hub-admin" "chronista-hub-public" "chronista-hub-webhook"
         ttl-seconds 3600
         refresh-flow "rfc6749"
         revocation-flow "rfc7009"
@@ -469,17 +451,9 @@ product-manifest {
     schema-url "https://chronista.club/v1/schema/manifest.json"
     version-pin-field "manifest_version"
 
-    required-fields [
-        "manifest_version" "product_slug" "name" "home_url"
-        "api_endpoint" "ingress_endpoint" "webhook_receive_url"
-        "resource_types_emitted" "scopes_requested" "public_key_jwks_uri"
-    ]
+    required-fields  "manifest_version" "product_slug" "name" "home_url" "api_endpoint" "ingress_endpoint" "webhook_receive_url" "resource_types_emitted" "scopes_requested" "public_key_jwks_uri"
 
-    optional-fields [
-        "description" "icon_url" "health_endpoint"
-        "admin_contact" "privacy_policy_url" "terms_url"
-        "sdk_versions" "capabilities" "supported_regions"
-    ]
+    optional-fields  "description" "icon_url" "health_endpoint" "admin_contact" "privacy_policy_url" "terms_url" "sdk_versions" "capabilities" "supported_regions"
 
     refresh {
         interval-hours 24
@@ -514,13 +488,13 @@ observability {
     tracing {
         protocol  "w3c-trace-context"
         export    "otlp-grpc"
-        propagate-headers ["traceparent" "tracestate"]
+        propagate-headers  "traceparent" "tracestate"
     }
 
     logging {
         format "jsonl"
-        required-fields ["ts" "level" "service" "event"]
-        contextual-fields ["trace_id" "span_id" "product" "resource_id"]
+        required-fields  "ts" "level" "service" "event"
+        contextual-fields  "trace_id" "span_id" "product" "resource_id"
     }
 
     rate-limit {
@@ -559,14 +533,14 @@ discovery {
     search {
         endpoint "GET /v1/search"
         backend  "surrealdb-fts-plus-qdrant-semantic"
-        modes    ["keyword" "semantic" "hybrid"]
+        modes     "keyword" "semantic" "hybrid"
         default-mode "hybrid"
         phase "3"
     }
 
     notification {
         endpoint-pattern "/v1/users/{handle}/inbox"
-        channels ["webhook" "email" "push"]
+        channels  "webhook" "email" "push"
         phase "3"
     }
 
@@ -651,8 +625,7 @@ resource-type "organization" {
     phase "2"
 
     payload {
-        field "owner_user"      ref target="user" key-field="usr_id"
-            description="org 作成者 (transfer 可能)"
+        field "owner_user"      ref target="user" key-field="usr_id" description="org 作成者 (transfer 可能)"
         field "billing_email"   string
         field "billing_address" block
         field "verified"        bool default=#false
