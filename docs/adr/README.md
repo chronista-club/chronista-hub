@@ -56,3 +56,4 @@ ADR は spec ↔ memory の橋。 spec を読んで "なぜ?" と思ったら AD
 | [ADR-012](./ADR-012-path-canonical-and-subdomain-reserve.md) | Path-based canonical URLs + subdomain reservation (G11) | Accepted | 2026-04-25 | gap G11 |
 | [ADR-013](./ADR-013-organization-shared-namespace.md) | Organization / team — shared `@handle` namespace (G12) | Accepted (Phase 1 reserve, Phase 2 impl) | 2026-04-25 | gap G12 |
 | [ADR-014](./ADR-014-observability-and-discovery.md) | Observability + Discovery (Phase 1-3 graded) (G13, G14) | Accepted | 2026-04-25 | gap G13, G14 |
+| [ADR-015](./ADR-015-ac-15-mvp-api-shape.md) | AC-15 MVP API shape — current state codification | Accepted (Phase 1 current state) | 2026-04-26 | ADR-003 相補 |
