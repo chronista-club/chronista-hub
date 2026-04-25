@@ -1,119 +1,612 @@
 // ============================================================================
-// Chronista Hub — World Tree Spec v0.1
+// Chronista Hub — World Tree Spec v0.2
 // ----------------------------------------------------------------------------
 // Creo ID / 各 product 横断の stateful resource meta-registry 仕様。
-// 2026-04-24 session で確定した architectural decision の primary artifact。
+// v0.2 は v0.1 の self-review (gap G1-G14) を踏まえた enrichment。
 //
 // Linear Epic: https://linear.app/chronista/issue/AC-10
-// Linear Phase 0: https://linear.app/chronista/issue/AC-11
-// Memory: chronista-hub-ownership.md (decision 原典)
+// Phase 0:     https://linear.app/chronista/issue/AC-11
+// Phase 1:     https://linear.app/chronista/issue/AC-12
+//
+// Memories (creo-memories Atlas: chronista-club):
+//   - mem_1CaP3fUFz5DKW3DzJP1jGf   gap 洗い出し (原典)
+//   - mem_1CaQaoCgSvELQ8fb2shYJj   全 gap resolution summary
+//   - mem_1CaP9DxkU2ZgHpXRQRwcMS   G1 identity delegation
+//   - mem_1CaP9W1ZLLtZhuTPyLzSgY   G2 API surface
+//   - mem_1CaP9eVseB84i9hvTsDavn   G3 event sync reliability
+//   - mem_1CaPCrdu2YNwbeAHSrg5sY   G4 tombstone
+//   - mem_1CaPD65gvV2viWFrrLVe4z   G5 scope granularity
+//   - mem_1CaQNJFh51ehZg4Jwwsk9C   G6 manifest schema
+//   - mem_1CaQQF846JWBWoFghCLM9S   G7 dangling refs
+//   - mem_1CaQRnG1JFSBy5XQaXCsrR   G8 owner primary key
+//   - mem_1CaQRpmTu5VQMRaFfPAkie   G9 auth refresh / revocation
+//   - mem_1CaQUXVemqZV8qqmLQ6HGr   G10 spec versioning
+//   - mem_1CaQUm6HyBqsjQqApXtWwM   G11 path canonical
+//   - mem_1CaQaWhLANCtbAdGMfi6un   G12 organization
+//   - mem_1CaQaijKJKrdp9Tyyfe8NB   G13/G14 observability + discovery
 // ============================================================================
 
 meta {
-    version "0.1"
+    version "0.2.0"
     domain "chronista.club"
     title "Chronista Hub — World Tree"
     description "Identity + stateful resource meta-registry for Chronista ecosystem"
     status "draft"
     api-path-prefix "/v1"
+
+    // G10: spec evolution dashboard
+    changelog-url             "https://github.com/chronista-club/chronista-hub/blob/main/docs/spec/CHANGELOG.md"
+    migration-from-prev-url   "https://github.com/chronista-club/chronista-hub/blob/main/docs/spec/migrations/0.1-to-0.2.md"
+    archive-url               "https://github.com/chronista-club/chronista-hub/tree/main/docs/spec/archive"
 }
 
-// ---- Path schema -----------------------------------------------------------
+// ============================================================================
+// Spec syntax (G7) — formalize ad-hoc constructs from v0.1
+// ============================================================================
+
+spec-syntax {
+    construct "ref" {
+        default-key-field "{target}_id"
+        override-attribute "key-field"
+        description "他 resource-type への参照"
+    }
+
+    construct "enum-ref" {
+        format "<scope>.<enum-name>"
+        target-resolution "lookup"
+        fallback "error"
+        description "別所定義済の enum を再利用"
+    }
+}
+
+// ============================================================================
+// Spec lint rules (G7, G10)
+// ============================================================================
+
+spec-lint {
+    rule "no-dangling-refs"                       severity="error"
+    rule "no-undefined-resource-types"            severity="error"
+    rule "no-unused-resource-types"               severity="warn"
+    rule "cross-product-ref-via-user-or-app"      severity="error"
+    rule "version-bump-required-on-breaking-change" severity="error"
+    rule "changelog-entry-required"               severity="error"
+    rule "migration-guide-required-on-major"      severity="error"
+    rule "archive-snapshot-required-on-release"   severity="error"
+}
+
+// ============================================================================
+// Spec versioning (G10)
+// ============================================================================
+
+spec-versioning {
+    semver-policy "pre-1.0-allows-minor-breaking"
+
+    breaking-change-classifier {
+        breaking  "field-remove" "field-rename" "field-required-without-default" "field-type-change" "resource-type-remove" "resource-type-rename" "scope-remove" "scope-rename" "endpoint-remove" "endpoint-rename" "default-behavior-change"
+        additive  "field-add-optional" "endpoint-add" "scope-add" "resource-type-add" "enum-value-add"
+        cosmetic  "description-change" "comment-change" "ordering-change"
+    }
+
+    enum-evolution {
+        default-extensibility "open"
+        client-requirement "graceful-unknown-variant"
+    }
+
+    runtime-version-check {
+        request-header "X-Chronista-Spec-Version"
+        major-mismatch-action "reject-400"
+        client-newer-action "200-with-warning-header"
+    }
+
+    multi-version-coexistence {
+        max-parallel-majors 3
+        sunset-notice-months 6
+    }
+}
+
+// ============================================================================
+// Identity delegation (G1) — Creo ID is SSOT, Hub is mirror index
+// ============================================================================
+
+identity-delegation {
+    primary-owner "creo-id"
+    hub-role "mirror"
+
+    rename-policy {
+        mode "soft-redirect"
+        redirect-retention-days 90
+        path-identifier "usr_id"
+    }
+
+    reclaim-policy {
+        cooldown-days 180
+    }
+
+    canonicalization {
+        lowercase #true
+        redirect-on-mismatch "301"
+    }
+}
+
+// ============================================================================
+// Handle namespace (G12) — shared user / organization / reserved
+// ============================================================================
+
+handle-namespace {
+    style "shared"
+    differentiator-field "account_type"
+
+    reserved-handles  "chronista-club" "chronista" "creo-memories" "creo" "vantage-point" "vp" "cplp" "fleetstage" "fleetflow" "gfp" "go-fast-packing" "chronista-hub"
+}
+
+// ============================================================================
+// Path schema (G11)
+// ============================================================================
 
 path-schema {
-    root "/@{handle}"
-    reserved-slug "identity"
-    reserved-slug "apps"
-    reserved-slug "world"
-    reserved-slug ".well-known"
-    separator "/"
+    canonical-form "path-based"
+    canonical-format "/@{handle}/..."
+
     handle-pattern #"^[a-z0-9][a-z0-9-]{0,30}$"#
+    case-sensitivity "lowercase-canonical"
+    case-mismatch-action "301-to-canonical"
+    separator "/"
+
+    subdomain-policy {
+        wildcard-handle-subdomain "reserved-no-resolve"
+        system-subdomains  "id" "api" "www" "admin" "docs" "status" "assets" "webhooks"
+    }
+
+    reserved-path-slug  "identity" "apps" "world" ".well-known" "api" "oauth" "errors" "static" "health" "_"
+
+    trailing-slash-policy {
+        canonical "no-trailing"
+        mismatch-action "301-to-canonical"
+    }
+
+    url-encoding "ascii-only-no-encoding-needed"
+
+    idn-policy {
+        current "not-supported"
+        future-version "v1.x-or-later"
+    }
+
+    security {
+        path-traversal-action "reject-400"
+        normalize-before-route #true
+    }
 }
 
-// ---- Base shape (全 resource 共通) ----------------------------------------
+// ============================================================================
+// Resource base (全 resource 共通) — extended for G4 (tombstone), G8 (owner key)
+// ============================================================================
 
 resource-base {
-    field "id"         uuid      required=#true description="UUID v7 (time-sortable)"
-    field "type"       string    required=#true description="resource-type の slug"
-    field "owner"      ref       target="user"  description="user handle への参照"
-    field "visibility" enum      default="private" {
+    field "id"          uuid      required=#true description="UUID v7 (time-sortable) or EntId"
+    field "type"        string    required=#true description="resource-type の slug"
+    field "owner"       ref       target="user" key-field="usr_id" description="EntId (例: usr_Fj7cx53h)、 rename に耐える stable key"
+    field "visibility"  enum      default="private" {
         value "private" description="owner のみ"
         value "shared"  description="明示 audience のみ"
         value "public"  description="全 visitor"
     }
-    field "created_at" timestamp required=#true
-    field "updated_at" timestamp
-    field "path"       string    pattern=#"^/@[a-z0-9-]+/.+"# description="canonical URL path"
+    field "created_at"  timestamp required=#true
+    field "updated_at"  timestamp
+    field "deleted_at"  timestamp description="tombstone 時点 (G4)、 未設定なら alive"
+    field "path"        string    pattern=#"^/@[a-z0-9-]+/.+"# description="canonical URL path (derived)"
 }
 
-// ---- Sync protocol ---------------------------------------------------------
+// ============================================================================
+// API surface (G2)
+// ============================================================================
 
-sync-protocol {
-    default     "event-sourced"
-    fallback    "webhook"
-    consistency "eventual"
+api {
+    version "v1"
+    base-path "/v1"
 
-    event-schema {
-        field "event_id"    uuid      required=#true
-        field "app_id"      string    required=#true
-        field "kind"        enum {
-            value "resource.created"
-            value "resource.updated"
-            value "resource.deleted"
-        }
-        field "resource"    block     description="resource payload (resource-base + payload)"
-        field "idempotency" string    description="同 event 多重送信に対する guard key"
-        field "emitted_at"  timestamp required=#true
-    }
-}
-
-// ---- Auth model ------------------------------------------------------------
-
-auth {
-    // Creo ID を OIDC provider として使用
-    oidc-issuer    "https://id.creo-memories.in"
-    oidc-jwks-uri  "https://id.creo-memories.in/.well-known/jwks.json"
-
-    product-token {
-        // product が Hub に resource register する時の credential
-        kind "app-token"
-        scope-registry {
-            scope "register:resource"  description="resource の create / update"
-            scope "delete:resource"    description="resource 削除"
-            scope "read:public"        description="public visibility のみ読取"
+    ingress {
+        endpoint "POST /events" auth="product-token" {
+            description "Batch event publish from products"
         }
     }
 
-    user-token {
-        // user が自分の subtree を触る credential
-        kind "user-jwt"
-        issuer "creo-id"
-        audiences "chronista-hub"
+    egress-read {
+        endpoint "GET /users/{handle}"                         auth="user-jwt-or-public"
+        endpoint "GET /users/{handle}/{product}"               auth="user-jwt-or-public"
+        endpoint "GET /users/{handle}/{product}/{type}/{id}"   auth="user-jwt-or-public"
+        endpoint "GET /apps"                                   auth="public"
+        endpoint "GET /apps/{app_id}"                          auth="public"
+        endpoint "GET /apps/{app_id}/manifest"                 auth="public"
+        endpoint "GET /search"                                 auth="user-jwt-or-public" {
+            param "q"       required=#true
+            param "type"    multiple=#true
+            param "handle"
+            param "product"
+            param "search-mode" enum-values= "keyword" "semantic" "hybrid" default="hybrid"
+        }
+        endpoint "GET /products"                               auth="public"
+    }
+
+    egress-push {
+        endpoint "POST /subscriptions"                         auth="user-jwt"
+        endpoint "DELETE /subscriptions/{id}"                  auth="user-jwt"
+        endpoint "POST /subscriptions/{id}/replay"             auth="user-jwt"
+    }
+
+    pagination {
+        style "cursor"
+        limit-default 50
+        limit-max 100
+        cursor-format "opaque-base64"
+    }
+
+    errors {
+        format "rfc7807"
+        type-namespace "https://chronista.club/errors/"
+    }
+
+    rate-limit {
+        enabled #true
+        bucket-ingress "per-product-token"
+        bucket-egress "per-user-jwt-or-ip"
+    }
+
+    cache {
+        etag #true
+        last-modified #true
+        list-max-age-seconds 60
     }
 }
 
 // ============================================================================
-// Core resource: user (tree root)
+// API response conventions (G8)
+// ============================================================================
+
+api-response-conventions {
+    envelope "{ data, meta }"
+
+    ref-expansion {
+        owner {
+            field "usr_id"         type="entid"
+            field "handle"         type="string" derived=#true
+            field "canonical_path" type="string" derived=#true
+        }
+    }
+}
+
+// ============================================================================
+// Sync protocol (G3) — at-least-once + dedup + ordering + signing
+// ============================================================================
+
+sync-protocol {
+    default      "event-sourced"
+    fallback     "webhook"
+    consistency  "eventual"
+
+    delivery-guarantee "at-least-once"
+    dedup-strategy     "idempotency-key"
+    dedup-scope        "(app_id, idempotency_key)"
+    dedup-ttl-hours    24
+
+    ordering {
+        scope     "per-resource"
+        mechanism "sequence-number"
+        gap-detection "request-replay"
+    }
+
+    signing {
+        algorithm                   "HMAC-SHA256"
+        ingress                     "optional-phase1-required-phase2"
+        egress-push                 "required"
+        timestamp-drift-max-seconds 300
+        signature-header            "X-Chronista-Signature"
+        timestamp-header            "X-Chronista-Timestamp"
+    }
+
+    retry {
+        scheme                    "exponential-backoff"
+        backoff-schedule-seconds   1 5 25 120 600 3600 21600
+        max-attempts              7
+        dlq-on-exhaustion         #true
+    }
+
+    replay {
+        bootstrap-endpoint        "POST /v1/events/replay"
+        per-resource-endpoint     "GET /v1/users/{handle}/{product}/{type}/{id}/history"
+        dlq-recovery-endpoint     "POST /v1/subscriptions/{id}/replay"
+    }
+
+    backpressure {
+        ingress     "429-with-retry-after"
+        egress-push "subscriber-5xx-backoff"
+        metric      "queue_depth_total"
+    }
+}
+
+// ============================================================================
+// Event schema (G3 expansion)
+// ============================================================================
+
+event-schema {
+    field "event_id"        uuid      required=#true
+    field "app_id"          string    required=#true
+    field "kind"            enum extensible=#true {
+        value "resource.created"
+        value "resource.updated"
+        value "resource.deleted"
+        value "resource.purged"
+        value "user.gdpr_purge_requested"
+    }
+    field "resource"        block     description="resource payload (resource-base + payload)"
+    field "resource_id"     string    required=#true description="event の対象、 sequence scope"
+    field "sequence_number" int       required=#true description="(app_id, resource_id) 単位 monotonic"
+    field "prev_event_id"   uuid      description="strict causality 用、 任意"
+    field "idempotency"     string    description="同 event 多重送信に対する guard key"
+    field "signature"       string    description="HMAC-SHA256 hex (G3 signing)"
+    field "signature_ts"    timestamp description="signature 生成時刻、 replay 防止"
+    field "emitted_at"      timestamp required=#true
+    field "deleted_at"      timestamp description="resource.deleted 時必須"
+    field "deleted_reason"  enum extensible=#true {
+        value "user-delete"
+        value "product-deregister"
+        value "admin-delete"
+        value "gdpr-purge"
+    }
+    field "final_payload"   block     description="削除直前 snapshot (replay 用)"
+    field "replay"          bool      default=#false description="bootstrap replay 判別"
+}
+
+// ============================================================================
+// Tombstone policy (G4)
+// ============================================================================
+
+tombstone-policy {
+    default-retention "indefinite"
+    purge-endpoint "POST /v1/resources/{id}/purge"
+    purge-confirmation "2-step"
+    cascade-mode "retain-orphan"
+    stale-ref-response "410-gone"
+    list-default-exclude-tombstones #true
+    list-include-flag "?include_deleted=true"
+}
+
+// ============================================================================
+// GDPR (G4)
+// ============================================================================
+
+gdpr {
+    right-to-be-forgotten {
+        endpoint "POST /v1/users/{handle}/gdpr-purge"
+        sla-days 30
+        user-record-tombstone-retention-days 180
+        broadcast-event "user.gdpr_purge_requested"
+    }
+}
+
+// ============================================================================
+// Auth (G9)
+// ============================================================================
+
+auth {
+    oidc-issuer    "https://id.creo-memories.in"
+    oidc-jwks-uri  "https://id.creo-memories.in/.well-known/jwks.json"
+
+    user-token {
+        kind "user-jwt"
+        issuer "creo-id"
+        audiences  "chronista-hub" "chronista-hub-admin" "chronista-hub-public" "chronista-hub-webhook"
+        ttl-seconds 3600
+        refresh-flow "rfc6749"
+        revocation-flow "rfc7009"
+        revocation-cache-ttl-seconds 60
+    }
+
+    product-token {
+        kind "app-token"
+        issuer "chronista-hub"
+        ttl-days 365
+        rotation-reminder-days 30
+        rotation-overlap-days 30
+        revocation-immediate #true
+    }
+
+    app-user-token {
+        kind "user-jwt-on-behalf-of"
+        issuer "chronista-hub"
+        ttl-seconds 3600
+        oauth-flow "authorization-code"
+        phase "2"
+    }
+
+    introspection-endpoint "POST /v1/oauth/introspect"
+    revocation-list-fetch-interval-seconds 60
+    jwks-cache-ttl-seconds 300
+
+    scope-registry {
+        scope "events.publish"                description="全 type wildcard (非推奨)"
+        scope "events.publish.{type}"
+        scope "events.publish.*"
+        scope "events.delete.{type}"
+        scope "resources.read.public"         description="anonymous 可"
+        scope "resources.read.own"            description="owner=self"
+        scope "resources.read.shared"         description="audience=self の shared"
+        scope "resources.read.{type}"         description="cross-user 3rd party (要 user consent)"
+        scope "resources.delete.{type}"
+        scope "apps.register"                 description="new app 登録 (admin)"
+        scope "apps.verify"                   description="verified flag (admin)"
+        scope "webhooks.subscribe.{type}"
+    }
+
+    least-privilege-rule "declare-only-what-you-emit"
+    scope-discovery-endpoint "GET /v1/scopes"
+}
+
+// ============================================================================
+// Product manifest (G6)
+// ============================================================================
+
+product-manifest {
+    format "json"
+    location-pattern ".well-known/chronista-hub-manifest"
+    schema-url "https://chronista.club/v1/schema/manifest.json"
+    version-pin-field "manifest_version"
+
+    required-fields  "manifest_version" "product_slug" "name" "home_url" "api_endpoint" "ingress_endpoint" "webhook_receive_url" "resource_types_emitted" "scopes_requested" "public_key_jwks_uri"
+
+    optional-fields  "description" "icon_url" "health_endpoint" "admin_contact" "privacy_policy_url" "terms_url" "sdk_versions" "capabilities" "supported_regions"
+
+    refresh {
+        interval-hours 24
+        on-scope-add "require-reapproval"
+        on-scope-remove "immediate-revoke"
+        on-endpoint-change "immediate-apply-with-audit"
+        on-jwks-uri-change "key-rotation-audit"
+    }
+
+    registration-endpoint   "POST /v1/apps"
+    deregistration-endpoint "POST /v1/apps/{app_id}/deregister"
+    tombstone-retention-days 90
+}
+
+// ============================================================================
+// Observability (G13)
+// ============================================================================
+
+observability {
+    health {
+        shallow-endpoint "GET /health"
+        deep-endpoint    "GET /health/deep"
+        format           "application/health+json"
+    }
+
+    metrics {
+        endpoint "GET /metrics"
+        format   "prometheus"
+        auth     "admin-or-internal"
+    }
+
+    tracing {
+        protocol  "w3c-trace-context"
+        export    "otlp-grpc"
+        propagate-headers  "traceparent" "tracestate"
+    }
+
+    logging {
+        format "jsonl"
+        required-fields  "ts" "level" "service" "event"
+        contextual-fields  "trace_id" "span_id" "product" "resource_id"
+    }
+
+    rate-limit {
+        algorithm "token-bucket"
+        defaults {
+            ingress-per-product-token 1000
+            egress-per-user-jwt        600
+            egress-per-ip               60
+            webhook-events-per-second  100
+        }
+        unit "per-minute"
+        exceeded-status 429
+        exceeded-header "Retry-After"
+    }
+
+    sla {
+        status-page-url "https://status.chronista.club"
+        uptime-target 0.999
+    }
+}
+
+// ============================================================================
+// Discovery & search & notification (G14、 phase 2-3)
+// ============================================================================
+
+discovery {
+    feed {
+        recent-endpoint   "GET /v1/feed/recent"
+        popular-endpoint  "GET /v1/feed/popular"
+        rss-format        #true
+        atom-format       #true
+        cache-max-age-seconds 300
+        phase "2"
+    }
+
+    search {
+        endpoint "GET /v1/search"
+        backend  "surrealdb-fts-plus-qdrant-semantic"
+        modes     "keyword" "semantic" "hybrid"
+        default-mode "hybrid"
+        phase "3"
+    }
+
+    notification {
+        endpoint-pattern "/v1/users/{handle}/inbox"
+        channels  "webhook" "email" "push"
+        phase "3"
+    }
+
+    follow {
+        resource-type "follow"
+        timeline-endpoint "/v1/users/{handle}/timeline"
+        phase "3"
+    }
+}
+
+// ============================================================================
+// Phase scoping
+// ============================================================================
+
+phase-scoping {
+    "user account_type field"        "phase-1"
+    "organization resource-type"      "phase-2"
+    "org-membership resource-type"    "phase-2"
+    "org lifecycle endpoints"         "phase-2"
+    "discovery feed (recent/popular)" "phase-2"
+    "search backend"                  "phase-3"
+    "notification inbox"              "phase-3"
+    "follow / timeline"               "phase-3"
+    "rss / atom"                      "phase-3"
+}
+
+// ============================================================================
+// Core resource: user (G1, G12 — account_type 追加)
 // ============================================================================
 
 resource-type "user" {
     slug "@{handle}"
-    ownership "creo-id"  // Creo ID 側が primary owner、 Hub は index
+    ownership "creo-id"
 
     payload {
         field "handle"       string required=#true pattern=#"^[a-z0-9][a-z0-9-]{0,30}$"#
-        field "email"        string required=#true
+        field "email"        string required=#true description="個人なら user email、 org なら管理 email"
         field "display_name" string
         field "avatar_url"   string
         field "bio"          string
         field "locale"       string default="ja"
+        field "account_type" enum required=#true default="user" extensible=#true {
+            value "user"          description="個人"
+            value "organization"  description="団体・チーム・企業 (Phase 2 impl)"
+            value "reserved"      description="claim 不可 (squatting 防止)"
+        }
     }
 
     subtree {
-        child "identity" cardinality="1" owner="creo-id" description="provider / session state"
+        // Identity は Creo ID 側 SSOT、 Hub は virtual subtree (G7)
+        child "identity" {
+            ownership "external"
+            external-source "creo-id"
+            external-url "https://id.creo-memories.in/users/{handle}/identity"
+            description "auth state は Creo ID 専属、 Hub は redirect のみ"
+        }
 
-        // Products が register する subtree
+        // Org-specific subtree (Phase 2)
+        child "_org-meta" cardinality="0..1" owner="creo-id" description="account_type=organization 時のみ"
+        child "_members"  cardinality="0..1" owner="creo-id" description="account_type=organization 時の member list"
+        child "_orgs"     cardinality="0..1" owner="creo-id" description="所属 org 一覧 (account_type=user)"
+        child "_inbox"    cardinality="0..1" owner="creo-id" description="notification inbox (Phase 3)"
+
+        // Products subtree
         child "vp/worlds"          product="vp"            ownership="index-only"
+        child "vp/actors"          product="vp"            ownership="index-only"
         child "memories/atlases"   product="creo-memories" ownership="index-only"
         child "cplp/sessions"      product="cplp"          ownership="index-only"
         child "fleetstage/tenants" product="fleetstage"    ownership="index-only"
@@ -122,7 +615,86 @@ resource-type "user" {
 }
 
 // ============================================================================
-// Product manifests
+// Organization (G12, Phase 2)
+// ============================================================================
+
+resource-type "organization" {
+    slug "@{handle}/_org-meta"
+    ownership "creo-id"
+    sync "event-sourced"
+    phase "2"
+
+    payload {
+        field "owner_user"      ref target="user" key-field="usr_id" description="org 作成者 (transfer 可能)"
+        field "billing_email"   string
+        field "billing_address" block
+        field "verified"        bool default=#false
+        field "logo_url"        string
+        field "founded_at"      timestamp
+    }
+}
+
+resource-type "org-membership" {
+    slug "@{org-handle}/_members/{usr_id}"
+    ownership "creo-id"
+    sync "event-sourced"
+    phase "2"
+
+    payload {
+        field "org_user"    ref target="user" key-field="usr_id"
+        field "member_user" ref target="user" key-field="usr_id"
+        field "role"        enum required=#true {
+            value "owner"  description="org 全権 (transfer 可)"
+            value "admin"  description="member / billing 管理"
+            value "member" description="resource 利用権"
+            value "guest"  description="特定 resource のみ閲覧"
+        }
+        field "joined_at"   timestamp required=#true
+        field "invited_by"  ref target="user" key-field="usr_id"
+    }
+}
+
+// ============================================================================
+// Notification & follow (G14, Phase 3)
+// ============================================================================
+
+resource-type "notification" {
+    slug "@{handle}/_inbox/{notification_id}"
+    ownership "index-only"
+    sync "event-sourced"
+    phase "3"
+
+    payload {
+        field "from_product"  string required=#true
+        field "from_resource" ref
+        field "kind"          enum extensible=#true {
+            value "mention"
+            value "reply"
+            value "follow"
+            value "system"
+        }
+        field "title"         string required=#true
+        field "body"          string
+        field "action_url"    string
+        field "read_at"       timestamp
+    }
+}
+
+resource-type "follow" {
+    slug "follows/{follow_id}"
+    ownership "index-only"
+    sync "event-sourced"
+    phase "3"
+
+    payload {
+        field "follower"  ref target="user" key-field="usr_id" required=#true
+        field "followee"  ref target="user" key-field="usr_id" required=#true
+        field "started_at" timestamp required=#true
+    }
+}
+
+// ============================================================================
+// Product manifests (G5: scope refinement)
 // ============================================================================
 
 product "creo-memories" {
@@ -130,8 +702,9 @@ product "creo-memories" {
     description "Memory storage with hybrid SurrealDB + Qdrant backend"
     home-url "https://creo-memories.in"
     manifest-url "https://creo-memories.in/.well-known/chronista-hub-manifest"
-    scope "register:resource"
-    scope "delete:resource"
+
+    scope "events.publish.memories-atlas"
+    scope "events.delete.memories-atlas"
 }
 
 product "vp" {
@@ -139,33 +712,44 @@ product "vp" {
     description "Canvas-based parallel agent orchestration"
     home-url "https://vp.creo-memories.in"
     manifest-url "https://vp.creo-memories.in/.well-known/chronista-hub-manifest"
-    scope "register:resource"
-    scope "delete:resource"
+
+    scope "events.publish.vp-world"
+    scope "events.delete.vp-world"
+    scope "events.publish.vp-actor"
+    scope "events.delete.vp-actor"
 }
 
 product "cplp" {
     name "CPLP Sound System"
     description "Session-based music / sound collaboration"
     manifest-url "https://cplp.creo-memories.in/.well-known/chronista-hub-manifest"
-    scope "register:resource"
+
+    // delete scope 無し: cplp-session は immutable (終了時 ended_at セットのみ、 物理削除無し)
+    scope "events.publish.cplp-session"
 }
 
 product "fleetstage" {
     name "Fleetstage Cloud"
     description "Container orchestration deployment layer"
     manifest-url "https://fleetstage.cloud/.well-known/chronista-hub-manifest"
-    scope "register:resource"
+
+    // v0.2 で delete scope 追加 (tenant termination がある)
+    scope "events.publish.fleetstage-tenant"
+    scope "events.delete.fleetstage-tenant"
 }
 
 product "gfp" {
     name "Go Fast Packing"
     description "Shipment logistics tracking"
     manifest-url "https://gofast.packaging/.well-known/chronista-hub-manifest"
-    scope "register:resource"
+
+    // v0.2 で delete scope 追加 (shipment cancelled 等)
+    scope "events.publish.gfp-shipment"
+    scope "events.delete.gfp-shipment"
 }
 
 // ============================================================================
-// Resource types (各 product が register する)
+// Resource types — products が register する
 // ============================================================================
 
 resource-type "memories-atlas" {
@@ -175,11 +759,11 @@ resource-type "memories-atlas" {
     sync      "event-sourced"
 
     payload {
-        field "atlas_id"    string required=#true description="EntId (creo-memories 側 primary key)"
-        field "title"       string required=#true
-        field "description" string
+        field "atlas_id"     string required=#true description="EntId (creo-memories 側 primary key)"
+        field "title"        string required=#true
+        field "description"  string
         field "memory_count" int
-        field "visibility"  enum-ref="resource-base.visibility"
+        field "visibility"   enum-ref="resource-base.visibility"
     }
 }
 
@@ -195,8 +779,32 @@ resource-type "vp-world" {
         field "description"       string
         field "tmux_session_name" string
         field "actors" list {
-            element ref target="actor"
+            element ref target="vp-actor"  // v0.2: was "actor" (dangling)、 G7
         }
+    }
+}
+
+// G7: actor を vp-actor として正式 declaration
+resource-type "vp-actor" {
+    product   "vp"
+    slug      "vp/actors/{actor_id}"
+    ownership "index-only"
+    sync      "event-sourced"
+
+    payload {
+        field "actor_id"       string required=#true description="EntId vpa_..."
+        field "stand"          enum extensible=#true description="Stand Ensemble role" {
+            value "the-world"
+            value "star-platinum"
+            value "paisley-park"
+            value "heavens-door"
+            value "gold-experience"
+            value "hermit-purple"
+        }
+        field "lane"           string description="lane id"
+        field "canonical_name" string description="agent@creo-memories 形式"
+        field "world_id"       string description="vp-world への FK"
+        field "active"         bool   default=#true
     }
 }
 
@@ -212,7 +820,7 @@ resource-type "cplp-session" {
         field "started_at"   timestamp required=#true
         field "ended_at"     timestamp
         field "participants" list {
-            element ref target="user"
+            element ref target="user" key-field="usr_id"
         }
         field "bpm"          int
         field "key"          string
@@ -226,10 +834,10 @@ resource-type "fleetstage-tenant" {
     sync      "event-sourced"
 
     payload {
-        field "tenant_id"  string required=#true
-        field "title"      string required=#true
+        field "tenant_id"   string required=#true
+        field "title"       string required=#true
         field "fleet_count" int
-        field "region"     string
+        field "region"      string
     }
 }
 
@@ -243,11 +851,12 @@ resource-type "gfp-shipment" {
         field "shipment_id" string required=#true
         field "origin"      string
         field "destination" string
-        field "status"      enum {
+        field "status"      enum extensible=#true {
             value "booked"
             value "in-transit"
             value "delivered"
             value "exception"
+            value "cancelled"
         }
         field "eta"         timestamp
     }
@@ -259,7 +868,7 @@ resource-type "gfp-shipment" {
 
 resource-type "app" {
     slug "apps/{app_id}"
-    ownership "hub"  // Hub 自身が管理
+    ownership "hub"
 
     payload {
         field "app_id"      string  required=#true
@@ -270,28 +879,46 @@ resource-type "app" {
         field "scopes" list {
             element string
         }
-        field "verified" bool default=#false
+        field "verified"    bool default=#false
+        field "manifest_version"   string description="準拠 spec version (G6)"
+        field "manifest_url"       string required=#true
+        field "public_key_jwks_uri" string
+        field "status"      enum extensible=#true default="active" {
+            value "pending"        description="manifest 取得済、 admin review 待ち"
+            value "active"
+            value "deregistering"  description="deregister 進行中"
+            value "deregistered"   description="完全削除済 (purged)"
+        }
     }
 }
 
 // ============================================================================
-// Codegen hints (future)
+// Codegen hints (G10 と整合)
 // ============================================================================
 
 codegen {
+    spec-version-pin "0.2.0"
+
     target "typescript" {
         emit-path "packages/chronista-hub-client/src/types.ts"
         type-prefix "Hub"
+        spec-version-constant "SPEC_VERSION"
     }
     target "rust" {
         emit-path "crates/chronista-hub-client/src/types.rs"
         mod-name "hub_types"
+        spec-version-constant "SPEC_VERSION"
     }
     target "ruby" {
         emit-path "lib/chronista_hub/types.rb"
         module-name "ChronistaHub::Types"
+        spec-version-constant "SPEC_VERSION"
     }
     target "surrealql" {
-        emit-path "apps/chronista-hub-server/migrations/001_hub_schema.surql"
+        emit-path "apps/chronista-hub-server/migrations/{NNN}_spec_{version}.surql"
+    }
+    target "zod" {
+        emit-path "packages/chronista-hub-client/src/schema.ts"
+        description "ランタイム validation 用の Zod schema"
     }
 }
