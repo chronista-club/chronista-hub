@@ -49,8 +49,8 @@ async fn setup_mem() -> (Storage, EventLog) {
     let applied = run_pending_migrations(&db, migrations_dir()).await.unwrap();
     assert_eq!(
         applied.len(),
-        4,
-        "expected 4 migrations applied, got {applied:?}"
+        5,
+        "expected 5 migrations applied, got {applied:?}"
     );
     (Storage::new(db.clone()), EventLog::new(db))
 }
@@ -185,6 +185,24 @@ async fn event_log_append_and_dedup() {
     assert_eq!(pending[0].envelope.event_id, "ev_1");
 
     log.mark_processed("ev_1").await.unwrap();
+    assert_eq!(log.unprocessed(None).await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn event_log_dlq_after_max_retries() {
+    let (_storage, log) = setup_mem().await;
+    log.append(&sample_event("ev_x", "ix", sample_resource("a", "mito")))
+        .await
+        .unwrap();
+
+    // max 未満の失敗ではまだ pending (retry 対象)
+    log.record_failure("ev_x", "boom", 5).await.unwrap();
+    assert_eq!(log.unprocessed(None).await.unwrap().len(), 1);
+
+    // 上限到達で dead-letter 化 → unprocessed から除外 (poison pill にならない)
+    for _ in 0..4 {
+        log.record_failure("ev_x", "boom", 5).await.unwrap();
+    }
     assert_eq!(log.unprocessed(None).await.unwrap().len(), 0);
 }
 

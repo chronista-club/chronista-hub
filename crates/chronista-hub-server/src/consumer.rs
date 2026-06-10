@@ -11,6 +11,9 @@ use crate::event_log::EventLog;
 use crate::model::{EventKind, StoredEvent};
 use crate::storage::Storage;
 
+/// apply をこの回数失敗したら dead-letter 化する (poison pill 回避)。
+const MAX_RETRIES: i64 = 5;
+
 /// 1 event を kind に応じて storage に適用。
 pub async fn apply_event(event: &StoredEvent, storage: &Storage) -> anyhow::Result<()> {
     match event.envelope.kind {
@@ -43,6 +46,13 @@ pub async fn tick(log: &EventLog, storage: &Storage, batch: usize) -> (usize, us
             },
             Err(err) => {
                 tracing::error!(event_id = %ev.envelope.event_id, error = %err, "consumer: apply failed");
+                // 失敗を記録 (retry_count++、 上限で dead-letter 化して poison pill を防ぐ)
+                if let Err(e) = log
+                    .record_failure(&ev.envelope.event_id, &err.to_string(), MAX_RETRIES)
+                    .await
+                {
+                    tracing::error!(event_id = %ev.envelope.event_id, error = %e, "consumer: record_failure failed");
+                }
                 errors += 1;
             }
         }

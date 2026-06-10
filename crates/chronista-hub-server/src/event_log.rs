@@ -82,13 +82,35 @@ impl EventLog {
             Some(l) => format!(" LIMIT {l}"),
             None => String::new(),
         };
+        // failed_at IS NONE で dead-letter 済み event を除外 (poison pill 回避)。
         let sql = format!(
-            "SELECT * FROM hub_event WHERE processed_at IS NONE ORDER BY received_at{limit_clause}"
+            "SELECT * FROM hub_event WHERE processed_at IS NONE AND failed_at IS NONE ORDER BY received_at{limit_clause}"
         );
         let rows: Vec<Value> = self.db.query(sql).await?.take(0)?;
         rows.into_iter()
             .map(|v| serde_json::from_value::<StoredEvent>(v).map_err(anyhow::Error::from))
             .collect()
+    }
+
+    /// apply 失敗を記録。 retry_count を増やし、 max_retries 到達で failed_at を立てて
+    /// dead-letter 化する (= 以降 unprocessed に出てこない)。
+    pub async fn record_failure(
+        &self,
+        event_id: &str,
+        error: &str,
+        max_retries: i64,
+    ) -> anyhow::Result<()> {
+        self.db
+            .query(
+                "UPDATE type::record('hub_event', $id) SET retry_count = (retry_count ?? 0) + 1, last_error = $err;
+                 UPDATE type::record('hub_event', $id) SET failed_at = time::now() WHERE (retry_count ?? 0) >= $max AND failed_at IS NONE;",
+            )
+            .bind(("id", event_id.to_string()))
+            .bind(("err", error.to_string()))
+            .bind(("max", max_retries))
+            .await?
+            .check()?;
+        Ok(())
     }
 
     pub async fn mark_processed(&self, event_id: &str) -> anyhow::Result<()> {
