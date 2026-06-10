@@ -4,8 +4,7 @@
   "private": true,
   "description": "Chronista Hub — World Tree meta-registry for the Chronista ecosystem",
   "workspaces": [
-    "packages/*",
-    "apps/*"
+    "packages/*"
   ],
   "scripts": {
     "test": "bun test",
@@ -15,9 +14,10 @@
     "format": "biome format --write .",
     "check": "biome check --write .",
     "gen": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target all --output-dir generated/",
-    "gen:ts": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target ts -o apps/chronista-hub-server/src/generated/world-tree.ts",
-    "gen:zod": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target zod -o apps/chronista-hub-server/src/generated/world-tree.schema.ts",
-    "gen:surql": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target surql -o migrations/002_hub_resource_from_spec.surql"
+    "gen:ts": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target ts -o generated/world-tree.ts",
+    "gen:zod": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target zod -o generated/world-tree.schema.ts",
+    "gen:rust": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target rust -o generated/world_tree.rs",
+    "gen:surql": "bun packages/cli/bin/kdl-schema.ts gen docs/spec/world-tree.kdl --target surql -o migrations/002_resource_types_from_spec.surql"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.8",

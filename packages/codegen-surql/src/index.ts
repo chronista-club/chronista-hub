@@ -24,7 +24,7 @@
  *   int / number       → int / number
  *   bool               → bool
  *   object             → object FLEXIBLE
- *   list               → array<unknown>
+ *   list               → array<any>
  *   enum-ref           → string fallback
  */
 import type { KdlDocument, KdlNode } from '@kdl-schema/parser'
@@ -97,7 +97,7 @@ function extractFields(resourceType: KdlNode): FieldSpec[] {
       fieldType === 'list' ||
       child.children.some(c => c.name === 'element')
     ) {
-      surqlType = 'array<unknown>'
+      surqlType = 'array<any>'
     } else if (typeof fieldType === 'string') {
       const mapped = mapKdlTypeToSurql(fieldType)
       surqlType = mapped.type
@@ -120,12 +120,16 @@ function escapeSurqlString(s: string): string {
 }
 
 function renderField(tableName: string, field: FieldSpec): string {
+  // 非 required は option<T> にする (SCHEMAFULL では未指定 field が NONE になり、
+  // bare type だと coercion error になるため)。FLEXIBLE は TYPE の前に置く。
+  const typeExpr = field.required
+    ? field.surqlType
+    : `option<${field.surqlType}>`
+  // SurrealDB v3: FLEXIBLE は TYPE の後に置く。
+  const flexibleSuffix = field.flexible ? ' FLEXIBLE' : ''
   const lines: string[] = [
-    `DEFINE FIELD OVERWRITE ${field.name} ON ${tableName} TYPE ${field.surqlType}`,
+    `DEFINE FIELD OVERWRITE ${field.name} ON ${tableName} TYPE ${typeExpr}${flexibleSuffix}`,
   ]
-  if (field.flexible) {
-    lines.push('  FLEXIBLE')
-  }
   if (field.required) {
     lines.push('  ASSERT $value != NONE')
   }

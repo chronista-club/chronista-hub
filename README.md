@@ -39,23 +39,50 @@ id.creo-memories.in     各 product
 - **Phase 1-5** — Memories hub-sync (pilot) ([AC-18](https://linear.app/chronista/issue/AC-18))
 - **Phase 2+** — Pilot pair / End user dashboard / Universal public URL / 3rd party SDK
 
-## Development
+## Server (Rust)
+
+Hub server は **Rust + axum + embedded SurrealDB (kv-rocksdb)** で実装 (ADR-016、 低レイテンシ重視)。
+DB は別プロセス不要の in-process embedded。 起動時 `AUTO_MIGRATE_ENABLED=true` で `migrations/*.surql` を
+listen 前に適用する。
+
+```bash
+# build / lint / test (SurrealDB は in-process なので別プロセス不要)
+cargo build
+cargo clippy --all-targets
+cargo test
+
+# 起動 (auto-migrate + RocksDB 永続化)
+AUTO_MIGRATE_ENABLED=true CHRONISTA_HUB_DB_PATH=./data/hub.rocksdb \
+  cargo run -p chronista-hub-server
+
+# 永続化 e2e (publish → consumer → tree read → 再起動後も残存)
+bash scripts/e2e.sh
+```
+
+env: `CHRONISTA_HUB_PORT` (default 3000) / `SURREALDB_NAMESPACE` (default `chronista`) /
+`SURREALDB_DATABASE` (default `hub`) / `CHRONISTA_HUB_DB_PATH` (RocksDB dir) /
+`AUTO_MIGRATE_ENABLED` / `MIGRATIONS_DIR` (default `./migrations`)。
+
+> TS/Bun 版 (旧実装) は branch `feat/persistence-surrealdb` に参照保存。
+
+## Codegen / spec (Bun)
 
 ```bash
 bun install
-bun run typecheck
-bun run check
-bun test
+bun test          # codegen pipeline の unit tests
+bun run gen:surql # spec → migrations/002_resource_types_from_spec.surql
 ```
 
 ## Workspace layout (monorepo)
 
-2026-04-25 監修で **monorepo 一本化** 戦略に統合。 server / spec / KDL codegen tool を 1 repo に同居させて maintenance burden を最小化。
+**monorepo 一本化** + **polyglot** (cargo + bun)。 server (Rust) / spec / KDL codegen tool (TS) を 1 repo に同居。
 
 ```
 chronista-hub/
-├── apps/
-│   └── chronista-hub-server/  (Hono + Bun backend)
+├── Cargo.toml                  (cargo workspace = crates/*)
+├── crates/
+│   └── chronista-hub-server/   (Rust: axum + embedded SurrealDB — ADR-016)
+├── package.json                (bun workspace = packages/*)
 ├── packages/                   (KDL spec → multi-target codegen pipeline)
 │   ├── kdl-parser/             (kdljs wrapper + typed AST)
 │   ├── codegen-ts/             (AST → TypeScript interface)
@@ -64,8 +91,10 @@ chronista-hub/
 │   ├── codegen-rust/           (AST → Rust struct + serde)
 │   └── cli/                    (unified `kdl-schema gen` command)
 ├── migrations/                 (SurrealQL schema migration、 codegen-surql 自動生成可能)
+├── scripts/e2e.sh              (binary e2e: 永続化検証)
 └── docs/
-    └── spec/                   (KDL spec v0.1 + README)
+    ├── spec/                   (KDL spec v0.2 + README)
+    └── adr/                    (ADR-001..016)
 ```
 
 ## Codegen scripts
