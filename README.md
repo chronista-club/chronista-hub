@@ -45,8 +45,30 @@ id.creo-memories.in     各 product
 bun install
 bun run typecheck
 bun run check
-bun test
+bun test          # unit tests (in-memory)。 SurrealDB 不要
 ```
+
+## Persistence (SurrealDB)
+
+`SURREALDB_URL` を設定すると Storage / EventLog が SurrealDB-backed になる (未設定なら in-memory で起動)。
+起動時 auto-migrate は `AUTO_MIGRATE_ENABLED=true` + root 認証で発動 (HTTP listen 前に `migrations/*.surql` を順次適用)。
+
+```bash
+# ローカル SurrealDB (memory backend)
+surreal start --user root --pass root --bind 127.0.0.1:8000 memory
+
+# persistence + auto-migrate ありで起動
+AUTO_MIGRATE_ENABLED=true \
+SURREALDB_URL=ws://127.0.0.1:8000/rpc \
+SURREALDB_USERNAME=root SURREALDB_PASSWORD=root \
+bun run apps/chronista-hub-server/src/index.ts
+
+# integration test (実 SurrealDB に対して)
+TEST_INTEGRATION=1 TEST_SURREALDB_URL=ws://127.0.0.1:8000/rpc bun test
+```
+
+env: `SURREALDB_URL` (ws://…/rpc) / `SURREALDB_NAMESPACE` (default `chronista`) / `SURREALDB_DATABASE` (default `hub`) /
+`SURREALDB_USERNAME` / `SURREALDB_PASSWORD` / `AUTO_MIGRATE_ENABLED` / `MIGRATIONS_DIR`。
 
 ## Workspace layout (monorepo)
 

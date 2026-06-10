@@ -68,11 +68,13 @@ describe('emitSurql — basic', () => {
     `)
     if (!document) throw new Error('parse failed')
     const out = emitSurql(document, { header: false })
-    expect(out).toContain('DEFINE FIELD OVERWRITE label ON t TYPE string')
+    expect(out).toContain(
+      'DEFINE FIELD OVERWRITE label ON t TYPE option<string>'
+    )
     expect(out).not.toMatch(/label[\s\S]*ASSERT/)
   })
 
-  it('object → FLEXIBLE', () => {
+  it('object → FLEXIBLE (before TYPE)', () => {
     const { document } = parseKdl(`
       resource-type "t" {
         payload {
@@ -82,11 +84,11 @@ describe('emitSurql — basic', () => {
     `)
     if (!document) throw new Error('parse failed')
     const out = emitSurql(document, { header: false })
-    expect(out).toContain('TYPE object')
-    expect(out).toContain('FLEXIBLE')
+    // optional object → TYPE option<object> FLEXIBLE (v3: FLEXIBLE は TYPE の後)
+    expect(out).toContain('TYPE option<object> FLEXIBLE')
   })
 
-  it('list → array<unknown>', () => {
+  it('list → array<any> (optional → option<array<any>>)', () => {
     const { document } = parseKdl(`
       resource-type "t" {
         payload {
@@ -98,7 +100,7 @@ describe('emitSurql — basic', () => {
     `)
     if (!document) throw new Error('parse failed')
     const out = emitSurql(document, { header: false })
-    expect(out).toContain('TYPE array<unknown>')
+    expect(out).toContain('TYPE option<array<any>>')
   })
 
   it('description → COMMENT escaped', () => {

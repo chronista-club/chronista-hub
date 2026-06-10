@@ -11,7 +11,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "surrealdb": "^2.0.3"
   },
   "devDependencies": {
     "@types/bun": "latest"
