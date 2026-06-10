@@ -42,6 +42,9 @@ async fn main() -> anyhow::Result<()> {
     let event_log = EventLog::new(db.clone());
     let consumer = spawn_consumer(event_log.clone(), storage.clone(), 1000);
 
+    // StubVerifier は JWT signature を検証しない dev/test 専用。
+    // 本番では Creo ID JWKS Verifier に差し替えること (ADR-002/010)。
+    tracing::warn!("auth: StubVerifier 使用中 — JWT 署名を検証しません。 dev/test 専用、 本番禁止");
     let state = AppState {
         storage,
         event_log,

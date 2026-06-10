@@ -31,9 +31,11 @@ pub struct AppError(anyhow::Error);
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // 詳細は log のみに出し、 クライアントには固定メッセージ (内部情報の漏洩防止)。
+        tracing::error!(error = %self.0, "internal server error");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": self.0.to_string() })),
+            Json(json!({ "error": "internal server error" })),
         )
             .into_response()
     }

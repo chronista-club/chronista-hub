@@ -108,6 +108,9 @@ fn scopes_of(p: &Principal) -> &[String] {
 /// - app token が accept かつ存在すれば優先的に検証 + scope チェック
 /// - 無ければ bearer (user) を検証
 /// - どちらも取れなければ Unauthorized
+///
+/// 注: `required_scopes` は **app token にのみ** 適用する (TS `auth.ts` と同仕様)。
+/// user token は scope 未評価 — user-scope ベース ACL は ADR-002/010 の Phase 2 拡張。
 pub fn authenticate(
     verifier: &dyn Verifier,
     bearer: Option<&str>,
@@ -119,23 +122,26 @@ pub fn authenticate(
 
     if accept.contains(&PrincipalKind::App)
         && let Some(tok) = app_token
-            && let Some(p) = verifier.verify_app_token(tok) {
-                let missing: Vec<String> = required_scopes
-                    .iter()
-                    .filter(|s| !scopes_of(&p).contains(s))
-                    .cloned()
-                    .collect();
-                if !missing.is_empty() {
-                    return Err(AuthError::InsufficientScope { missing });
-                }
-                principal = Some(p);
-            }
+        && let Some(p) = verifier.verify_app_token(tok)
+    {
+        let missing: Vec<String> = required_scopes
+            .iter()
+            .filter(|s| !scopes_of(&p).contains(s))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            return Err(AuthError::InsufficientScope { missing });
+        }
+        principal = Some(p);
+    }
 
-    if principal.is_none() && accept.contains(&PrincipalKind::User)
+    if principal.is_none()
+        && accept.contains(&PrincipalKind::User)
         && let Some(b) = bearer
-            && let Some(tok) = b.strip_prefix("Bearer ") {
-                principal = verifier.verify_user_token(tok);
-            }
+        && let Some(tok) = b.strip_prefix("Bearer ")
+    {
+        principal = verifier.verify_user_token(tok);
+    }
 
     principal.ok_or(AuthError::Unauthorized)
 }
