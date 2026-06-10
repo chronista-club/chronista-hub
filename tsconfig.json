@@ -28,6 +28,6 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["apps/**/src/**/*", "packages/**/src/**/*"],
+  "include": ["packages/**/src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
