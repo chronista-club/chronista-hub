@@ -24,6 +24,9 @@ tracing-subscriber.workspace = true
 surrealdb.workspace = true
 jsonwebtoken.workspace = true
 reqwest.workspace = true
+rand.workspace = true
+sha2.workspace = true
+subtle.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
