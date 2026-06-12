@@ -357,10 +357,14 @@ async fn product_token_issue_verify_revoke() {
     assert!(pt.verify("not-a-token").await.unwrap().is_none());
 
     // revoke → 即時無効
-    assert!(pt.revoke(&issued.token_id).await.unwrap());
+    assert!(pt.revoke("creo-memories", &issued.token_id).await.unwrap());
     assert!(pt.verify(&issued.token).await.unwrap().is_none());
     // 二重 revoke は false
-    assert!(!pt.revoke(&issued.token_id).await.unwrap());
+    assert!(!pt.revoke("creo-memories", &issued.token_id).await.unwrap());
+    // app_id 不一致でも revoke できない (別 app の token を hash 指定で殺せない)
+    let issued2 = pt.issue("creo-memories", &[], None, None).await.unwrap();
+    assert!(!pt.revoke("other-app", &issued2.token_id).await.unwrap());
+    assert!(pt.verify(&issued2.token).await.unwrap().is_some());
 }
 
 #[tokio::test]
@@ -546,4 +550,28 @@ async fn admin_endpoints_gated_and_issue_flow() {
         StatusCode::UNAUTHORIZED,
         "revoked token must be rejected"
     );
+}
+
+#[tokio::test]
+async fn product_token_rotate_inherits_scopes_when_empty() {
+    let (_storage, _log, pt) = setup_mem().await;
+
+    pt.issue(
+        "gfp",
+        &["register_resource".into(), "events.read".into()],
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    // scopes 未指定 (空) で rotate → 旧 token の scopes を継承 (権限なし token 事故の防止)
+    let rotated = pt.rotate("gfp", &[], None).await.unwrap();
+    assert_eq!(
+        rotated.scopes,
+        vec!["register_resource".to_string(), "events.read".to_string()]
+    );
+
+    // 明示指定があればそちらを使う
+    let rotated2 = pt.rotate("gfp", &["only.this".into()], None).await.unwrap();
+    assert_eq!(rotated2.scopes, vec!["only.this".to_string()]);
 }

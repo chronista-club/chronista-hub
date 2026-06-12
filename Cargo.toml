@@ -27,5 +27,7 @@ jsonwebtoken = "9"
 # product-token: 乱数生成 + SHA-256 hash (opaque token、 ADR-010 Phase 2)
 rand = "0.9"
 sha2 = "0.10"
+# 定数時間比較 (admin key 照合)
+subtle = "2"
 # JWKS fetch 専用 (起動時 1 回)。 TLS は aws-lc-rs (surrealdb と provider 一致)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

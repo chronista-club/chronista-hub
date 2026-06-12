@@ -258,7 +258,13 @@ fn check_admin(st: &AppState, headers: &HeaderMap) -> Result<(), Box<Response>> 
         .get("x-admin-key")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if Sha256::digest(provided.as_bytes()) != Sha256::digest(expected.as_bytes()) {
+    let eq: bool = {
+        use subtle::ConstantTimeEq;
+        Sha256::digest(provided.as_bytes())
+            .ct_eq(&Sha256::digest(expected.as_bytes()))
+            .into()
+    };
+    if !eq {
         return Err(Box::new(
             (
                 StatusCode::FORBIDDEN,
@@ -341,7 +347,7 @@ async fn revoke_token(
     if let Err(resp) = check_admin(&st, &headers) {
         return Ok(*resp);
     }
-    let revoked = st.product_tokens.revoke(&token_id).await?;
+    let revoked = st.product_tokens.revoke(&app_id, &token_id).await?;
     if revoked {
         tracing::info!(app_id = %app_id, token_id = %token_id, "admin: product-token revoked");
         Ok((StatusCode::OK, Json(json!({ "revoked": true }))).into_response())

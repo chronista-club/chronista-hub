@@ -40,7 +40,7 @@ mod hex {
 }
 
 /// 発行結果。 `token` (平文) はこのレスポンス以外で取得不可。
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct IssuedToken {
     /// 平文 token (一度きり)。
     pub token: String,
@@ -48,6 +48,19 @@ pub struct IssuedToken {
     pub app_id: String,
     pub scopes: Vec<String>,
     pub expires_at: String,
+}
+
+// Debug は手動実装で平文 token を REDACTED に (将来の `{:?}` log 追加による漏洩を構造的に防ぐ)。
+impl std::fmt::Debug for IssuedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IssuedToken")
+            .field("token", &"[REDACTED]")
+            .field("token_id", &self.token_id)
+            .field("app_id", &self.app_id)
+            .field("scopes", &self.scopes)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 /// token のメタ情報 (一覧用、 平文/hash は含まない)。
@@ -155,36 +168,93 @@ impl ProductTokenStore {
 
     /// rotation (ADR-010): 新 token を発行し、 旧 active token の expires_at を
     /// 30 日後へ短縮 (既に 30 日未満ならそのまま)。
+    ///
+    /// - **atomic**: 短縮 + 発行を 1 transaction で実行 (途中 crash で「旧だけ短縮・新なし」を防ぐ)
+    /// - **scopes 継承**: `scopes` が空なら直近 active token の scopes を引き継ぐ
+    ///   (`POST /rotate {}` で権限なし token が生まれる事故の防止)
     pub async fn rotate(
         &self,
         app_id: &str,
         scopes: &[String],
         note: Option<String>,
     ) -> anyhow::Result<IssuedToken> {
-        // 旧 active token の余命を overlap に短縮。
-        self.db
-            .query(format!(
-                "UPDATE hub_product_token
+        let (plaintext, hash) = generate_token();
+        let ttl = DEFAULT_TTL_DAYS;
+        // scopes 未指定なら直近 active token から継承 (SQL 側の分岐に頼らず Rust で SQL を出し分け)
+        let scopes_expr = if scopes.is_empty() {
+            "$inherited"
+        } else {
+            "$scopes"
+        };
+        let sql = format!(
+            "BEGIN TRANSACTION;
+             LET $inherited = (SELECT VALUE scopes FROM hub_product_token
+                 WHERE app_id = $app_id AND revoked_at IS NONE AND expires_at > time::now()
+                 ORDER BY created_at DESC LIMIT 1)[0] ?? [];
+             UPDATE hub_product_token
                  SET expires_at = time::now() + {ROTATE_OVERLAP_DAYS}d
                  WHERE app_id = $app_id AND revoked_at IS NONE
-                   AND expires_at > time::now() + {ROTATE_OVERLAP_DAYS}d"
-            ))
+                   AND expires_at > time::now() + {ROTATE_OVERLAP_DAYS}d;
+             CREATE type::record('hub_product_token', $hash) CONTENT {{
+                 token_hash: $hash,
+                 app_id: $app_id,
+                 scopes: {scopes_expr},
+                 note: $note,
+                 created_at: time::now(),
+                 expires_at: time::now() + {ttl}d,
+                 revoked_at: NONE
+             }} RETURN token_hash, app_id, scopes, <string> expires_at AS expires_at;
+             COMMIT TRANSACTION;"
+        );
+        let mut response = self
+            .db
+            .query(sql)
             .bind(("app_id", app_id.to_string()))
+            .bind(("scopes", scopes.to_vec()))
+            .bind(("hash", hash.clone()))
+            .bind(("note", note))
             .await?
             .check()?;
-        self.issue(app_id, scopes, None, note).await
+        // statement index (実測: BEGIN/COMMIT も index を占有する):
+        // 0=BEGIN 1=LET 2=UPDATE 3=CREATE 4=COMMIT
+        let rows: Vec<serde_json::Value> = response.take(3)?;
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("rotate create returned no row"))?;
+        Ok(IssuedToken {
+            token: plaintext,
+            token_id: hash,
+            app_id: app_id.to_string(),
+            scopes: row
+                .get("scopes")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            expires_at: row
+                .get("expires_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        })
     }
 
-    /// 即時 revoke。 対象が存在し active だったら true。
-    pub async fn revoke(&self, token_id: &str) -> anyhow::Result<bool> {
+    /// 即時 revoke。 対象が app_id に属し active だったら true
+    /// (app_id を照合し、 別 app の token を hash 指定で revoke できないようにする)。
+    pub async fn revoke(&self, app_id: &str, token_id: &str) -> anyhow::Result<bool> {
         let rows: Vec<serde_json::Value> = self
             .db
             .query(
                 "UPDATE hub_product_token SET revoked_at = time::now()
-                 WHERE token_hash = $id AND revoked_at IS NONE
+                 WHERE token_hash = $id AND app_id = $app_id AND revoked_at IS NONE
                  RETURN token_hash",
             )
             .bind(("id", token_id.to_string()))
+            .bind(("app_id", app_id.to_string()))
             .await?
             .take(0)?;
         Ok(!rows.is_empty())
