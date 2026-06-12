@@ -8,9 +8,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Context;
 use chronista_hub_server::app::{AppState, build_router};
-use chronista_hub_server::auth::StubVerifier;
-use chronista_hub_server::config::Config;
+use chronista_hub_server::auth::{JwksVerifier, StubVerifier, Verifier, fetch_jwks};
+use chronista_hub_server::config::{AuthConfig, Config};
 use chronista_hub_server::consumer::spawn_consumer;
 use chronista_hub_server::db::{connect_rocksdb, run_pending_migrations};
 use chronista_hub_server::event_log::EventLog;
@@ -42,13 +43,11 @@ async fn main() -> anyhow::Result<()> {
     let event_log = EventLog::new(db.clone());
     let consumer = spawn_consumer(event_log.clone(), storage.clone(), 1000);
 
-    // StubVerifier は JWT signature を検証しない dev/test 専用。
-    // 本番では Creo ID JWKS Verifier に差し替えること (ADR-002/010)。
-    tracing::warn!("auth: StubVerifier 使用中 — JWT 署名を検証しません。 dev/test 専用、 本番禁止");
+    let verifier = build_verifier(&cfg.auth).await?;
     let state = AppState {
         storage,
         event_log,
-        verifier: Arc::new(StubVerifier),
+        verifier,
         service: SERVICE_NAME.to_string(),
         version: VERSION.to_string(),
     };
@@ -65,6 +64,42 @@ async fn main() -> anyhow::Result<()> {
     consumer.stop().await;
     tracing::info!("shut down cleanly");
     Ok(())
+}
+
+/// env に応じて Verifier を構築。
+///
+/// - `STUB_AUTH_ALLOWED=true`: 無署名 StubVerifier (dev/test 専用、 loud warn)。
+/// - それ以外: Creo ID JWKS を起動時 fetch して JwksVerifier (user-jwt 実検証)。
+///   JWKS 到達不可なら fail-fast (= 本物の認証を要求したのに IdP に繋がらない)。
+async fn build_verifier(auth: &AuthConfig) -> anyhow::Result<Arc<dyn Verifier>> {
+    if auth.stub_auth_allowed {
+        tracing::warn!(
+            "auth: StubVerifier 使用中 (STUB_AUTH_ALLOWED=true) — JWT 署名を検証しません。 dev/test 専用、 本番禁止"
+        );
+        return Ok(Arc::new(StubVerifier));
+    }
+
+    tracing::info!(jwks_url = %auth.jwks_url, "auth: fetching Creo ID JWKS");
+    let jwks_json = fetch_jwks(&auth.jwks_url)
+        .await
+        .with_context(|| format!("fetch JWKS from {}", auth.jwks_url))?;
+    let verifier = JwksVerifier::from_jwks_json(
+        &jwks_json,
+        auth.issuer.clone(),
+        auth.audiences.clone(),
+        auth.allow_stub_app_token,
+    )?;
+    tracing::info!(
+        issuer = %auth.issuer, audiences = ?auth.audiences,
+        "auth: JwksVerifier ready (user-jwt RS256)"
+    );
+    if auth.allow_stub_app_token {
+        // product-token (署名付き Hub 発行) は ADR-010 Phase 2。 それまでの interim。
+        tracing::warn!(
+            "auth: interim 無署名 app-token を受理中 (STUB_APP_TOKEN_ALLOWED=true、 product-token = ADR-010 Phase 2 まで)"
+        );
+    }
+    Ok(Arc::new(verifier))
 }
 
 async fn shutdown_signal() {

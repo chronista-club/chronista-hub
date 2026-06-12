@@ -5,6 +5,9 @@
 //! 本番では Creo ID JWKS を検証する Verifier に差し替える (ADR-002 / ADR-010)。
 
 use base64::Engine;
+use jsonwebtoken::jwk::JwkSet;
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Principal {
@@ -64,25 +67,32 @@ impl Verifier for StubVerifier {
     }
 
     fn verify_app_token(&self, token: &str) -> Option<Principal> {
-        // 簡易フォーマット: "app:<appId>:<scope1>,<scope2>"
-        let parts: Vec<&str> = token.split(':').collect();
-        if parts.len() != 3 || parts[0] != "app" {
-            return None;
-        }
-        let app_id = parts[1];
-        if app_id.is_empty() {
-            return None;
-        }
-        let scopes = parts[2]
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect();
-        Some(Principal::App {
-            app_id: app_id.to_string(),
-            scopes,
-        })
+        parse_stub_app_token(token)
     }
+}
+
+/// 簡易 app-token (= 暫定 product-token) のパース: `app:<appId>:<scope1>,<scope2>`。
+///
+/// **署名検証なし**。 本物の product-token (Hub 発行・署名付き) は ADR-010 Phase 2。
+/// StubVerifier と JwksVerifier の両方が当面これを ingestion 経路の暫定手段として使う。
+fn parse_stub_app_token(token: &str) -> Option<Principal> {
+    let parts: Vec<&str> = token.split(':').collect();
+    if parts.len() != 3 || parts[0] != "app" {
+        return None;
+    }
+    let app_id = parts[1];
+    if app_id.is_empty() {
+        return None;
+    }
+    let scopes = parts[2]
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    Some(Principal::App {
+        app_id: app_id.to_string(),
+        scopes,
+    })
 }
 
 fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
@@ -94,6 +104,119 @@ fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
         .decode(parts[1])
         .ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+// ============================================================
+// JwksVerifier — Creo ID (OIDC) の user-jwt を JWKS で実検証 (ADR-002/010)
+// ============================================================
+
+/// Creo ID 発行 user-jwt の claims。
+#[derive(Debug, Deserialize)]
+struct Claims {
+    /// subject = `usr_id` (EntId、 ADR-002 の stable key)。
+    sub: String,
+    /// display handle (任意 custom claim)。
+    #[serde(default)]
+    handle: Option<String>,
+    /// OAuth2 scope (空白区切り文字列) — 任意。
+    #[serde(default)]
+    scope: String,
+}
+
+/// Creo ID JWKS で RS256 + iss + aud(list) + exp を検証する Verifier。
+///
+/// `from_jwks_json` で network 非依存に構築できる (test/起動時に fetch した JSON を渡す)。
+/// JWKS は構築時に固定 — rotation 反映は再起動が必要 (5 分 cache + push は ADR-010 Phase 2)。
+pub struct JwksVerifier {
+    jwks: JwkSet,
+    issuer: String,
+    audiences: Vec<String>,
+    /// 暫定 product-token (`app:id:scopes` 無署名) を受理するか。
+    /// 本物の Hub 発行 product-token (ADR-010 Phase 2) ができるまでの interim。
+    allow_stub_app_token: bool,
+}
+
+impl JwksVerifier {
+    /// JWKS JSON 文書から構築 (`https://<issuer>/.well-known/jwks.json` の中身)。
+    pub fn from_jwks_json(
+        jwks_json: &str,
+        issuer: impl Into<String>,
+        audiences: Vec<String>,
+        allow_stub_app_token: bool,
+    ) -> anyhow::Result<Self> {
+        let jwks: JwkSet = serde_json::from_str(jwks_json)?;
+        Ok(Self {
+            jwks,
+            issuer: issuer.into(),
+            audiences,
+            allow_stub_app_token,
+        })
+    }
+
+    /// RS256 + iss + aud(list 交差) + exp を検証して Claims を返す。
+    fn verify(&self, token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+        let header = decode_header(token)?;
+        let kid = header
+            .kid
+            .ok_or(jsonwebtoken::errors::ErrorKind::InvalidToken)?;
+        let jwk = self
+            .jwks
+            .find(&kid)
+            .ok_or(jsonwebtoken::errors::ErrorKind::InvalidToken)?;
+        let key = DecodingKey::from_jwk(jwk)?;
+        let mut validation = Validation::new(Algorithm::RS256);
+        // 重要: jsonwebtoken は claim が **存在する時のみ** iss/aud を検証する。
+        // required_spec_claims に明示しないと、 iss/aud を省いた token が
+        // すり抜ける (fail-open)。 exp/iss/aud を必須にして fail-closed にする。
+        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
+        // aud は list 交差で判定 (ADR-010): token の aud が我々の audience 群と 1 つでも一致すれば OK。
+        validation.set_audience(&self.audiences);
+        validation.set_issuer(&[&self.issuer]);
+        Ok(decode::<Claims>(token, &key, &validation)?.claims)
+    }
+}
+
+impl Verifier for JwksVerifier {
+    fn verify_user_token(&self, token: &str) -> Option<Principal> {
+        match self.verify(token) {
+            Ok(claims) => Some(Principal::User {
+                user_id: claims.sub,
+                handle: claims.handle,
+                scopes: claims.scope.split_whitespace().map(String::from).collect(),
+            }),
+            Err(err) => {
+                tracing::debug!(error = %err, "JwksVerifier: user token rejected");
+                None
+            }
+        }
+    }
+
+    fn verify_app_token(&self, token: &str) -> Option<Principal> {
+        // product-token (署名付き、 Hub 発行) は未実装 (ADR-010 Phase 2)。
+        // それまでの間、 ingestion を止めないため暫定 app-token を opt-in で受理。
+        if self.allow_stub_app_token {
+            parse_stub_app_token(token)
+        } else {
+            None
+        }
+    }
+}
+
+/// JWKS endpoint から JSON を取得 (起動時 1 回)。
+///
+/// timeout (10s) を付け、 IdP 無応答で起動が無限ブロックするのを防ぐ。
+pub async fn fetch_jwks(url: &str) -> anyhow::Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let body = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    Ok(body)
 }
 
 fn scopes_of(p: &Principal) -> &[String] {
