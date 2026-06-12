@@ -70,6 +70,14 @@ fn sign(claims: &TestClaims) -> String {
     encode(&header, claims, &key).expect("sign")
 }
 
+/// 任意の claims JSON を署名 (claim 欠落ケースを作るため)。
+fn sign_value(claims: &serde_json::Value) -> String {
+    let mut header = Header::new(Algorithm::RS256);
+    header.kid = Some(KID.into());
+    let key = EncodingKey::from_rsa_pem(PRIVATE_PEM.as_bytes()).expect("encoding key");
+    encode(&header, claims, &key).expect("sign")
+}
+
 fn verifier(allow_app: bool) -> JwksVerifier {
     JwksVerifier::from_jwks_json(
         &test_jwks(),
@@ -149,6 +157,31 @@ fn audience_list_intersection_accepted() {
 fn garbage_token_rejected() {
     assert!(verifier(false).verify_user_token("not.a.jwt").is_none());
     assert!(verifier(false).verify_user_token("").is_none());
+}
+
+#[test]
+fn missing_issuer_rejected() {
+    // iss を省いた token (有効署名) は required_spec_claims により拒否される (fail-closed)
+    let tok = sign_value(&serde_json::json!({"sub":"u","aud":"chronista-hub","exp":FUTURE}));
+    assert!(verifier(false).verify_user_token(&tok).is_none());
+}
+
+#[test]
+fn missing_audience_rejected() {
+    let tok = sign_value(&serde_json::json!({"sub":"u","iss":ISSUER,"exp":FUTURE}));
+    assert!(verifier(false).verify_user_token(&tok).is_none());
+}
+
+#[test]
+fn unknown_kid_rejected() {
+    // token は KID で署名されているが JWKS には別 kid しか無い → 拒否
+    let other_jwks = format!(
+        r#"{{"keys":[{{"kty":"RSA","use":"sig","alg":"RS256","kid":"different-kid","n":"{JWK_N}","e":"AQAB"}}]}}"#
+    );
+    let v = JwksVerifier::from_jwks_json(&other_jwks, ISSUER, vec!["chronista-hub".into()], false)
+        .unwrap();
+    let tok = sign(&claims(serde_json::json!("chronista-hub"), ISSUER, FUTURE));
+    assert!(v.verify_user_token(&tok).is_none());
 }
 
 #[test]

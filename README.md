@@ -71,13 +71,15 @@ env (DB/migration): `CHRONISTA_HUB_PORT` (default 3000) / `SURREALDB_NAMESPACE` 
 
 - **user-jwt**: Creo ID (OIDC) 発行を **JWKS で RS256 + iss + aud(list) + exp** 実検証 (`sub`→`usr_id`)。
 - **product-token** (ingestion): 当面は無署名の暫定 app-token (`X-App-Token: app:<id>:<scopes>`)。
+  JWKS mode では default で **拒否** (fail-closed)、 `STUB_APP_TOKEN_ALLOWED=true` で interim 受理。
   Hub 発行の署名付き product-token は ADR-010 **Phase 2**。
 - **dev**: `STUB_AUTH_ALLOWED=true` で無署名 StubVerifier (JWT 署名を検証しない)。 未設定なら起動時に
   JWKS を fetch して JwksVerifier (到達不可なら fail-fast)。
 
 env (auth): `CREO_ID_ISSUER` (default `https://id.creo-memories.in/`) /
 `CREO_ID_JWKS_URL` (default `{issuer}.well-known/jwks.json`) /
-`CREO_ID_AUDIENCES` (comma 区切り、 default `chronista-hub`) / `STUB_AUTH_ALLOWED` (default false)。
+`CREO_ID_AUDIENCES` (comma 区切り、 default `chronista-hub`) /
+`STUB_AUTH_ALLOWED` (default false) / `STUB_APP_TOKEN_ALLOWED` (default false)。
 
 > TS/Bun 版 (旧実装) は branch `feat/persistence-surrealdb` に参照保存。
 

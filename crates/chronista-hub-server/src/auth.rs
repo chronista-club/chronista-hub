@@ -165,6 +165,10 @@ impl JwksVerifier {
             .ok_or(jsonwebtoken::errors::ErrorKind::InvalidToken)?;
         let key = DecodingKey::from_jwk(jwk)?;
         let mut validation = Validation::new(Algorithm::RS256);
+        // 重要: jsonwebtoken は claim が **存在する時のみ** iss/aud を検証する。
+        // required_spec_claims に明示しないと、 iss/aud を省いた token が
+        // すり抜ける (fail-open)。 exp/iss/aud を必須にして fail-closed にする。
+        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
         // aud は list 交差で判定 (ADR-010): token の aud が我々の audience 群と 1 つでも一致すれば OK。
         validation.set_audience(&self.audiences);
         validation.set_issuer(&[&self.issuer]);
@@ -199,8 +203,19 @@ impl Verifier for JwksVerifier {
 }
 
 /// JWKS endpoint から JSON を取得 (起動時 1 回)。
+///
+/// timeout (10s) を付け、 IdP 無応答で起動が無限ブロックするのを防ぐ。
 pub async fn fetch_jwks(url: &str) -> anyhow::Result<String> {
-    let body = reqwest::get(url).await?.error_for_status()?.text().await?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let body = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
     Ok(body)
 }
 

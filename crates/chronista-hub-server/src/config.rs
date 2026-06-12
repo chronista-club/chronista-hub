@@ -23,6 +23,9 @@ pub struct AuthConfig {
     pub audiences: Vec<String>,
     /// dev/test: JWKS を使わず無署名 StubVerifier を許可 (本番禁止)。
     pub stub_auth_allowed: bool,
+    /// interim: JWKS mode でも無署名 app-token (暫定 product-token) を受理するか。
+    /// default false (fail-closed)。 product-token (ADR-010 Phase 2) ができるまでの ingestion 用に opt-in。
+    pub allow_stub_app_token: bool,
 }
 
 impl Config {
@@ -60,6 +63,8 @@ impl Config {
                 jwks_url,
                 audiences,
                 stub_auth_allowed: std::env::var("STUB_AUTH_ALLOWED").as_deref() == Ok("true"),
+                allow_stub_app_token: std::env::var("STUB_APP_TOKEN_ALLOWED").as_deref()
+                    == Ok("true"),
             },
         }
     }

@@ -83,21 +83,22 @@ async fn build_verifier(auth: &AuthConfig) -> anyhow::Result<Arc<dyn Verifier>> 
     let jwks_json = fetch_jwks(&auth.jwks_url)
         .await
         .with_context(|| format!("fetch JWKS from {}", auth.jwks_url))?;
-    // allow_stub_app_token=true: product-token (署名付き Hub 発行) は ADR-010 Phase 2 のため、
-    // それまで ingestion を止めないよう暫定 app-token を受理する。
     let verifier = JwksVerifier::from_jwks_json(
         &jwks_json,
         auth.issuer.clone(),
         auth.audiences.clone(),
-        true,
+        auth.allow_stub_app_token,
     )?;
     tracing::info!(
         issuer = %auth.issuer, audiences = ?auth.audiences,
         "auth: JwksVerifier ready (user-jwt RS256)"
     );
-    tracing::warn!(
-        "auth: interim 無署名 app-token を受理中 (product-token = ADR-010 Phase 2 まで)"
-    );
+    if auth.allow_stub_app_token {
+        // product-token (署名付き Hub 発行) は ADR-010 Phase 2。 それまでの interim。
+        tracing::warn!(
+            "auth: interim 無署名 app-token を受理中 (STUB_APP_TOKEN_ALLOWED=true、 product-token = ADR-010 Phase 2 まで)"
+        );
+    }
     Ok(Arc::new(verifier))
 }
 
