@@ -70,15 +70,21 @@ env (DB/migration): `CHRONISTA_HUB_PORT` (default 3000) / `SURREALDB_NAMESPACE` 
 ## Auth (ADR-002/010)
 
 - **user-jwt**: Creo ID (OIDC) 発行を **JWKS で RS256 + iss + aud(list) + exp** 実検証 (`sub`→`usr_id`)。
-- **product-token** (ingestion): 当面は無署名の暫定 app-token (`X-App-Token: app:<id>:<scopes>`)。
-  JWKS mode では default で **拒否** (fail-closed)、 `STUB_APP_TOKEN_ALLOWED=true` で interim 受理。
-  Hub 発行の署名付き product-token は ADR-010 **Phase 2**。
-- **dev**: `STUB_AUTH_ALLOWED=true` で無署名 StubVerifier (JWT 署名を検証しない)。 未設定なら起動時に
-  JWKS を fetch して JwksVerifier (到達不可なら fail-fast)。
+- **product-token** (ingestion、 ADR-017): Hub 発行の opaque token (`cht_...`)。 DB には SHA-256 hash
+  のみ保存、 平文は発行時一度きり。 検証は in-process DB lookup、 即時 revoke 可。
+  `X-App-Token: cht_...` で events を publish する。
+- **管理 API** (`HUB_ADMIN_KEY` 設定時のみ有効、 `X-Admin-Key` header):
+  `POST /v1/apps/{id}/tokens` (発行) / `POST .../tokens/rotate` (30 日 overlap rotation) /
+  `DELETE .../tokens/{token_id}` (即時 revoke) / `GET .../tokens` (一覧)。 未設定なら全て 404。
+- **JWKS refresh**: 5 分毎 (`JWKS_REFRESH_SECS`) に background refetch。 失敗時は旧 keys 維持
+  — Creo ID の鍵 rotation に再起動なしで追従。
+- **dev**: `STUB_AUTH_ALLOWED=true` で無署名 StubVerifier。 `STUB_APP_TOKEN_ALLOWED=true` で
+  JWKS mode でも無署名 app-token (`app:<id>:<scopes>`) を受理 (どちらも default false = fail-closed)。
 
 env (auth): `CREO_ID_ISSUER` (default `https://id.creo-memories.in/`) /
 `CREO_ID_JWKS_URL` (default `{issuer}.well-known/jwks.json`) /
 `CREO_ID_AUDIENCES` (comma 区切り、 default `chronista-hub`) /
+`HUB_ADMIN_KEY` (unset = 管理 API 無効) / `JWKS_REFRESH_SECS` (default 300) /
 `STUB_AUTH_ALLOWED` (default false) / `STUB_APP_TOKEN_ALLOWED` (default false)。
 
 > TS/Bun 版 (旧実装) は branch `feat/persistence-surrealdb` に参照保存。

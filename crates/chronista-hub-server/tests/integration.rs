@@ -12,6 +12,7 @@ use chronista_hub_server::consumer::{spawn_consumer, tick};
 use chronista_hub_server::db::{connect_mem, run_pending_migrations};
 use chronista_hub_server::event_log::EventLog;
 use chronista_hub_server::model::{EventEnvelope, EventKind, Resource, Visibility};
+use chronista_hub_server::product_token::ProductTokenStore;
 use chronista_hub_server::storage::{Storage, TreeReadOptions};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
@@ -44,15 +45,19 @@ fn sample_event(event_id: &str, idem: &str, res: Resource) -> EventEnvelope {
     }
 }
 
-async fn setup_mem() -> (Storage, EventLog) {
+async fn setup_mem() -> (Storage, EventLog, ProductTokenStore) {
     let db = connect_mem("chronista", "hub").await.unwrap();
     let applied = run_pending_migrations(&db, migrations_dir()).await.unwrap();
     assert_eq!(
         applied.len(),
-        5,
-        "expected 5 migrations applied, got {applied:?}"
+        6,
+        "expected 6 migrations applied, got {applied:?}"
     );
-    (Storage::new(db.clone()), EventLog::new(db))
+    (
+        Storage::new(db.clone()),
+        EventLog::new(db.clone()),
+        ProductTokenStore::new(db),
+    )
 }
 
 #[tokio::test]
@@ -80,7 +85,7 @@ async fn migrations_seed_reserved_handles() {
 
 #[tokio::test]
 async fn storage_crud() {
-    let (storage, _log) = setup_mem().await;
+    let (storage, _log, _pt) = setup_mem().await;
     let opts = TreeReadOptions::default();
 
     storage
@@ -156,7 +161,7 @@ async fn storage_crud() {
 
 #[tokio::test]
 async fn event_log_append_and_dedup() {
-    let (_storage, log) = setup_mem().await;
+    let (_storage, log, _pt) = setup_mem().await;
     let res = sample_resource("atlas_1", "mito");
 
     assert!(
@@ -190,7 +195,7 @@ async fn event_log_append_and_dedup() {
 
 #[tokio::test]
 async fn event_log_dlq_after_max_retries() {
-    let (_storage, log) = setup_mem().await;
+    let (_storage, log, _pt) = setup_mem().await;
     log.append(&sample_event("ev_x", "ix", sample_resource("a", "mito")))
         .await
         .unwrap();
@@ -208,7 +213,7 @@ async fn event_log_dlq_after_max_retries() {
 
 #[tokio::test]
 async fn consumer_applies_event_to_storage() {
-    let (storage, log) = setup_mem().await;
+    let (storage, log, _pt) = setup_mem().await;
     log.append(&sample_event(
         "ev_1",
         "i1",
@@ -226,12 +231,14 @@ async fn consumer_applies_event_to_storage() {
 
 #[tokio::test]
 async fn http_publish_then_read() {
-    let (storage, log) = setup_mem().await;
+    let (storage, log, product_tokens) = setup_mem().await;
     let consumer = spawn_consumer(log.clone(), storage.clone(), 50);
     let state = AppState {
         storage,
         event_log: log,
         verifier: Arc::new(StubVerifier),
+        product_tokens,
+        admin_key: None,
         service: "chronista-hub".into(),
         version: "0.0.1".into(),
     };
@@ -315,3 +322,228 @@ async fn http_publish_then_read() {
 // 注: RocksDB 永続化 (プロセス再起動でデータ残存) は in-process 再接続だと
 // RocksDB の LOCK が同一プロセス内で解放されないため unit test 化しない。
 // 別プロセス起動での検証は scripts/e2e.sh (バイナリ e2e) で担保する。
+
+// ============================================================
+// product-token (ADR-010 Phase 2)
+// ============================================================
+
+#[tokio::test]
+async fn product_token_issue_verify_revoke() {
+    let (_storage, _log, pt) = setup_mem().await;
+
+    let issued = pt
+        .issue(
+            "creo-memories",
+            &["register_resource".into()],
+            None,
+            Some("test".into()),
+        )
+        .await
+        .unwrap();
+    assert!(issued.token.starts_with("cht_"));
+
+    // verify → App principal (app_id + scopes)
+    let p = pt.verify(&issued.token).await.unwrap();
+    match p {
+        Some(chronista_hub_server::auth::Principal::App { app_id, scopes }) => {
+            assert_eq!(app_id, "creo-memories");
+            assert_eq!(scopes, vec!["register_resource".to_string()]);
+        }
+        other => panic!("expected App principal, got {other:?}"),
+    }
+
+    // 不正 token / prefix 違いは None
+    assert!(pt.verify("cht_deadbeef").await.unwrap().is_none());
+    assert!(pt.verify("not-a-token").await.unwrap().is_none());
+
+    // revoke → 即時無効
+    assert!(pt.revoke(&issued.token_id).await.unwrap());
+    assert!(pt.verify(&issued.token).await.unwrap().is_none());
+    // 二重 revoke は false
+    assert!(!pt.revoke(&issued.token_id).await.unwrap());
+}
+
+#[tokio::test]
+async fn product_token_rotate_overlap() {
+    let (_storage, _log, pt) = setup_mem().await;
+
+    let old = pt
+        .issue("vp", &["register_resource".into()], None, None)
+        .await
+        .unwrap();
+    let new = pt
+        .rotate("vp", &["register_resource".into()], None)
+        .await
+        .unwrap();
+
+    // overlap: 新旧両方とも当面 valid (ADR-010: 30 日並走)
+    assert!(pt.verify(&old.token).await.unwrap().is_some());
+    assert!(pt.verify(&new.token).await.unwrap().is_some());
+
+    // 旧 token の expires_at は短縮されている (meta で確認)
+    let metas = pt.list("vp").await.unwrap();
+    assert_eq!(metas.len(), 2);
+    let old_meta = metas.iter().find(|m| m.token_id == old.token_id).unwrap();
+    let new_meta = metas.iter().find(|m| m.token_id == new.token_id).unwrap();
+    assert!(
+        old_meta.expires_at < new_meta.expires_at,
+        "rotated-out token must expire before the new one: {} vs {}",
+        old_meta.expires_at,
+        new_meta.expires_at
+    );
+}
+
+#[tokio::test]
+async fn admin_endpoints_gated_and_issue_flow() {
+    let (storage, log, product_tokens) = setup_mem().await;
+
+    // --- admin_key 未設定 → 管理 API は 404 (存在ごと隠す) ---
+    let state_no_admin = AppState {
+        storage: storage.clone(),
+        event_log: log.clone(),
+        verifier: Arc::new(StubVerifier),
+        product_tokens: product_tokens.clone(),
+        admin_key: None,
+        service: "chronista-hub".into(),
+        version: "0.0.1".into(),
+    };
+    let router = build_router(state_no_admin);
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/apps/creo-memories/tokens")
+                .header("x-admin-key", "whatever")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // --- admin_key 設定済み ---
+    let state = AppState {
+        storage,
+        event_log: log,
+        verifier: Arc::new(StubVerifier),
+        product_tokens,
+        admin_key: Some("sekrit-admin".into()),
+        service: "chronista-hub".into(),
+        version: "0.0.1".into(),
+    };
+    let router = build_router(state);
+
+    // wrong key → 403
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/apps/creo-memories/tokens")
+                .header("x-admin-key", "wrong")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // correct key → 201 + 平文 token
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/apps/creo-memories/tokens")
+                .header("x-admin-key", "sekrit-admin")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"scopes":["register_resource"]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let issued: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token = issued["token"].as_str().unwrap().to_string();
+    assert!(token.starts_with("cht_"));
+
+    // 発行された product-token で events ingestion が通る (本物の認証経路)
+    let now = "2026-06-12T00:00:00Z";
+    let event = serde_json::json!({
+        "event_id": "ev_pt_1", "app_id": "creo-memories", "kind": "resource.created",
+        "idempotency": "idem_pt_1", "emitted_at": now,
+        "resource": sample_resource("atlas_pt", "mito"),
+    });
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/events")
+                .header("x-app-token", &token)
+                .header("content-type", "application/json")
+                .body(Body::from(event.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    // 一覧 (メタのみ、 平文/hash 含まず) → revoke → 同 token で 401
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/apps/creo-memories/tokens")
+                .header("x-admin-key", "sekrit-admin")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let listed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_id = listed["tokens"][0]["token_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        listed["tokens"][0].get("token").is_none(),
+        "plaintext must not be listed"
+    );
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/apps/creo-memories/tokens/{token_id}"))
+                .header("x-admin-key", "sekrit-admin")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/events")
+                .header("x-app-token", &token)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "revoked token must be rejected"
+    );
+}

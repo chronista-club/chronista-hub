@@ -126,9 +126,10 @@ struct Claims {
 /// Creo ID JWKS で RS256 + iss + aud(list) + exp を検証する Verifier。
 ///
 /// `from_jwks_json` で network 非依存に構築できる (test/起動時に fetch した JSON を渡す)。
-/// JWKS は構築時に固定 — rotation 反映は再起動が必要 (5 分 cache + push は ADR-010 Phase 2)。
+/// JWKS は `RwLock` で保持し、 `refresh_from_json` で稼働中に差し替え可能
+/// (main の background task が 5 分毎に refetch — Creo ID の鍵 rotation に再起動なしで追従)。
 pub struct JwksVerifier {
-    jwks: JwkSet,
+    jwks: std::sync::RwLock<JwkSet>,
     issuer: String,
     audiences: Vec<String>,
     /// 暫定 product-token (`app:id:scopes` 無署名) を受理するか。
@@ -146,11 +147,18 @@ impl JwksVerifier {
     ) -> anyhow::Result<Self> {
         let jwks: JwkSet = serde_json::from_str(jwks_json)?;
         Ok(Self {
-            jwks,
+            jwks: std::sync::RwLock::new(jwks),
             issuer: issuer.into(),
             audiences,
             allow_stub_app_token,
         })
+    }
+
+    /// JWKS を新しい JSON で差し替え (background refresh 用)。 parse 失敗なら旧 keys を維持して Err。
+    pub fn refresh_from_json(&self, jwks_json: &str) -> anyhow::Result<()> {
+        let new_jwks: JwkSet = serde_json::from_str(jwks_json)?;
+        *self.jwks.write().expect("jwks lock poisoned") = new_jwks;
+        Ok(())
     }
 
     /// RS256 + iss + aud(list 交差) + exp を検証して Claims を返す。
@@ -159,11 +167,13 @@ impl JwksVerifier {
         let kid = header
             .kid
             .ok_or(jsonwebtoken::errors::ErrorKind::InvalidToken)?;
-        let jwk = self
-            .jwks
-            .find(&kid)
-            .ok_or(jsonwebtoken::errors::ErrorKind::InvalidToken)?;
-        let key = DecodingKey::from_jwk(jwk)?;
+        let key = {
+            let jwks = self.jwks.read().expect("jwks lock poisoned");
+            let jwk = jwks
+                .find(&kid)
+                .ok_or(jsonwebtoken::errors::ErrorKind::InvalidToken)?;
+            DecodingKey::from_jwk(jwk)?
+        };
         let mut validation = Validation::new(Algorithm::RS256);
         // 重要: jsonwebtoken は claim が **存在する時のみ** iss/aud を検証する。
         // required_spec_claims に明示しないと、 iss/aud を省いた token が
@@ -226,16 +236,19 @@ fn scopes_of(p: &Principal) -> &[String] {
     }
 }
 
-/// header から principal を解決。 TS `requireAuth` と同ロジック。
+/// header から principal を解決。 TS `requireAuth` と同ロジック + product-token 対応。
 ///
-/// - app token が accept かつ存在すれば優先的に検証 + scope チェック
-/// - 無ければ bearer (user) を検証
+/// - app token が accept かつ存在すれば優先的に検証 + scope チェック。
+///   検証順: ① `ProductTokenStore` (Hub 発行 opaque token、 async DB lookup)
+///   ② `Verifier::verify_app_token` (interim 無署名 stub、 env opt-in 時のみ)
+/// - 無ければ bearer (user) を verifier (sync、 JWT 演算のみ) で検証
 /// - どちらも取れなければ Unauthorized
 ///
 /// 注: `required_scopes` は **app token にのみ** 適用する (TS `auth.ts` と同仕様)。
-/// user token は scope 未評価 — user-scope ベース ACL は ADR-002/010 の Phase 2 拡張。
-pub fn authenticate(
+/// user token は scope 未評価 — user-scope ベース ACL は将来拡張。
+pub async fn authenticate(
     verifier: &dyn Verifier,
+    product_tokens: Option<&crate::product_token::ProductTokenStore>,
     bearer: Option<&str>,
     app_token: Option<&str>,
     accept: &[PrincipalKind],
@@ -245,17 +258,31 @@ pub fn authenticate(
 
     if accept.contains(&PrincipalKind::App)
         && let Some(tok) = app_token
-        && let Some(p) = verifier.verify_app_token(tok)
     {
-        let missing: Vec<String> = required_scopes
-            .iter()
-            .filter(|s| !scopes_of(&p).contains(s))
-            .cloned()
-            .collect();
-        if !missing.is_empty() {
-            return Err(AuthError::InsufficientScope { missing });
+        // ① Hub 発行 product-token (DB lookup)。 store エラーは「不一致」として扱い
+        //    fallback へ (DB 障害で auth 経路が 500 にならないよう保守的に拒否側へ倒す)。
+        let mut p = match product_tokens {
+            Some(store) => store.verify(tok).await.unwrap_or_else(|err| {
+                tracing::error!(error = %err, "product-token verify failed (treating as no-match)");
+                None
+            }),
+            None => None,
+        };
+        // ② interim 無署名 stub app-token (env opt-in 時のみ verifier が受理)
+        if p.is_none() {
+            p = verifier.verify_app_token(tok);
         }
-        principal = Some(p);
+        if let Some(p) = p {
+            let missing: Vec<String> = required_scopes
+                .iter()
+                .filter(|s| !scopes_of(&p).contains(s))
+                .cloned()
+                .collect();
+            if !missing.is_empty() {
+                return Err(AuthError::InsufficientScope { missing });
+            }
+            principal = Some(p);
+        }
     }
 
     if principal.is_none()

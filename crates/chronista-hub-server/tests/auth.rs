@@ -217,3 +217,28 @@ async fn fetch_jwks_over_http() {
     let tok = sign(&claims(serde_json::json!("chronista-hub"), ISSUER, FUTURE));
     assert!(v.verify_user_token(&tok).is_some());
 }
+
+#[test]
+fn jwks_refresh_swaps_keys() {
+    // 最初は別 kid のみ → 検証失敗。 refresh_from_json で正しい kid に swap → 成功。
+    let other_jwks = format!(
+        r#"{{"keys":[{{"kty":"RSA","use":"sig","alg":"RS256","kid":"old-kid","n":"{JWK_N}","e":"AQAB"}}]}}"#
+    );
+    let v = JwksVerifier::from_jwks_json(&other_jwks, ISSUER, vec!["chronista-hub".into()], false)
+        .unwrap();
+    let tok = sign(&claims(serde_json::json!("chronista-hub"), ISSUER, FUTURE));
+    assert!(
+        v.verify_user_token(&tok).is_none(),
+        "kid mismatch before refresh"
+    );
+
+    v.refresh_from_json(&test_jwks()).unwrap();
+    assert!(v.verify_user_token(&tok).is_some(), "valid after refresh");
+
+    // 壊れた JSON での refresh は Err + 旧 keys 維持 (まだ valid)
+    assert!(v.refresh_from_json("{not json").is_err());
+    assert!(
+        v.verify_user_token(&tok).is_some(),
+        "old keys kept on parse failure"
+    );
+}

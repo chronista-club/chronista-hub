@@ -9,6 +9,7 @@ pub mod consumer;
 pub mod db;
 pub mod event_log;
 pub mod model;
+pub mod product_token;
 pub mod storage;
 
 pub const SERVICE_NAME: &str = "chronista-hub";

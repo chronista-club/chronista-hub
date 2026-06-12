@@ -24,8 +24,12 @@ pub struct AuthConfig {
     /// dev/test: JWKS を使わず無署名 StubVerifier を許可 (本番禁止)。
     pub stub_auth_allowed: bool,
     /// interim: JWKS mode でも無署名 app-token (暫定 product-token) を受理するか。
-    /// default false (fail-closed)。 product-token (ADR-010 Phase 2) ができるまでの ingestion 用に opt-in。
+    /// default false (fail-closed)。 署名なし token の dev 用 opt-in。
     pub allow_stub_app_token: bool,
+    /// 管理 API (token 発行/rotate/revoke) を守る admin key。 None なら管理 API 無効。
+    pub admin_key: Option<String>,
+    /// JWKS background refetch 間隔 (秒)。 ADR-010: 5 分。
+    pub jwks_refresh_secs: u64,
 }
 
 impl Config {
@@ -65,6 +69,13 @@ impl Config {
                 stub_auth_allowed: std::env::var("STUB_AUTH_ALLOWED").as_deref() == Ok("true"),
                 allow_stub_app_token: std::env::var("STUB_APP_TOKEN_ALLOWED").as_deref()
                     == Ok("true"),
+                admin_key: std::env::var("HUB_ADMIN_KEY")
+                    .ok()
+                    .filter(|s| !s.is_empty()),
+                jwks_refresh_secs: std::env::var("JWKS_REFRESH_SECS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(300),
             },
         }
     }
