@@ -51,17 +51,33 @@ cargo build
 cargo clippy --all-targets
 cargo test
 
-# 起動 (auto-migrate + RocksDB 永続化)
+# 起動 (本番想定: Creo ID JWKS で user-jwt を実検証)
 AUTO_MIGRATE_ENABLED=true CHRONISTA_HUB_DB_PATH=./data/hub.rocksdb \
+  cargo run -p chronista-hub-server
+
+# dev 起動 (無署名 StubVerifier。 JWKS fetch を skip)
+STUB_AUTH_ALLOWED=true AUTO_MIGRATE_ENABLED=true CHRONISTA_HUB_DB_PATH=./data/hub.rocksdb \
   cargo run -p chronista-hub-server
 
 # 永続化 e2e (publish → consumer → tree read → 再起動後も残存)
 bash scripts/e2e.sh
 ```
 
-env: `CHRONISTA_HUB_PORT` (default 3000) / `SURREALDB_NAMESPACE` (default `chronista`) /
+env (DB/migration): `CHRONISTA_HUB_PORT` (default 3000) / `SURREALDB_NAMESPACE` (default `chronista`) /
 `SURREALDB_DATABASE` (default `hub`) / `CHRONISTA_HUB_DB_PATH` (RocksDB dir) /
 `AUTO_MIGRATE_ENABLED` / `MIGRATIONS_DIR` (default `./migrations`)。
+
+## Auth (ADR-002/010)
+
+- **user-jwt**: Creo ID (OIDC) 発行を **JWKS で RS256 + iss + aud(list) + exp** 実検証 (`sub`→`usr_id`)。
+- **product-token** (ingestion): 当面は無署名の暫定 app-token (`X-App-Token: app:<id>:<scopes>`)。
+  Hub 発行の署名付き product-token は ADR-010 **Phase 2**。
+- **dev**: `STUB_AUTH_ALLOWED=true` で無署名 StubVerifier (JWT 署名を検証しない)。 未設定なら起動時に
+  JWKS を fetch して JwksVerifier (到達不可なら fail-fast)。
+
+env (auth): `CREO_ID_ISSUER` (default `https://id.creo-memories.in/`) /
+`CREO_ID_JWKS_URL` (default `{issuer}.well-known/jwks.json`) /
+`CREO_ID_AUDIENCES` (comma 区切り、 default `chronista-hub`) / `STUB_AUTH_ALLOWED` (default false)。
 
 > TS/Bun 版 (旧実装) は branch `feat/persistence-surrealdb` に参照保存。
 

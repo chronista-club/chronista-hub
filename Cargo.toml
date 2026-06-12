@@ -22,3 +22,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 surrealdb = { version = "3.0", features = ["kv-rocksdb", "kv-mem"] }
+# JWT 検証 (RS256、 内部で ring を使う — TLS の aws-lc-rs とは別用途で競合しない)
+jsonwebtoken = "9"
+# JWKS fetch 専用 (起動時 1 回)。 TLS は aws-lc-rs (surrealdb と provider 一致)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

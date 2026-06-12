@@ -28,7 +28,8 @@ JSON
 )
 
 echo "==> boot #1 (auto-migrate)"
-AUTO_MIGRATE_ENABLED=true CHRONISTA_HUB_DB_PATH="$DB_DIR" CHRONISTA_HUB_PORT="$PORT" \
+# STUB_AUTH_ALLOWED=true: e2e を hermetic に保つ (default は起動時に外部 JWKS を fetch する)。
+AUTO_MIGRATE_ENABLED=true STUB_AUTH_ALLOWED=true CHRONISTA_HUB_DB_PATH="$DB_DIR" CHRONISTA_HUB_PORT="$PORT" \
   MIGRATIONS_DIR="$ROOT/migrations" "$BIN" >/tmp/hub-rust-1.log 2>&1 &
 PID1=$!
 wait_health
@@ -47,7 +48,7 @@ echo "$BEFORE" | grep -q "atlas_e2e" || { echo "FAIL: resource not found before 
 kill $PID1; wait $PID1 2>/dev/null || true
 
 echo "==> boot #2 (no migrate, same DB dir)"
-CHRONISTA_HUB_DB_PATH="$DB_DIR" CHRONISTA_HUB_PORT="$PORT" "$BIN" >/tmp/hub-rust-2.log 2>&1 &
+STUB_AUTH_ALLOWED=true CHRONISTA_HUB_DB_PATH="$DB_DIR" CHRONISTA_HUB_PORT="$PORT" "$BIN" >/tmp/hub-rust-2.log 2>&1 &
 PID2=$!
 wait_health
 
