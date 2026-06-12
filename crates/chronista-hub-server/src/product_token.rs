@@ -194,7 +194,8 @@ impl ProductTokenStore {
              UPDATE hub_product_token
                  SET expires_at = time::now() + {ROTATE_OVERLAP_DAYS}d
                  WHERE app_id = $app_id AND revoked_at IS NONE
-                   AND expires_at > time::now() + {ROTATE_OVERLAP_DAYS}d;
+                   AND expires_at > time::now() + {ROTATE_OVERLAP_DAYS}d
+                 RETURN NONE;
              CREATE type::record('hub_product_token', $hash) CONTENT {{
                  token_hash: $hash,
                  app_id: $app_id,

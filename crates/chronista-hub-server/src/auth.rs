@@ -202,8 +202,8 @@ impl Verifier for JwksVerifier {
     }
 
     fn verify_app_token(&self, token: &str) -> Option<Principal> {
-        // product-token (署名付き、 Hub 発行) は未実装 (ADR-010 Phase 2)。
-        // それまでの間、 ingestion を止めないため暫定 app-token を opt-in で受理。
+        // Hub 発行 product-token (opaque) は authenticate() で ProductTokenStore が先に処理する。
+        // このパスは interim 無署名 stub app-token のみ担当 (env opt-in 時)。
         if self.allow_stub_app_token {
             parse_stub_app_token(token)
         } else {
