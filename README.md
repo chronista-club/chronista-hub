@@ -87,6 +87,37 @@ env (auth): `CREO_ID_ISSUER` (default `https://id.creo-memories.in/`) /
 `HUB_ADMIN_KEY` (unset = 管理 API 無効) / `JWKS_REFRESH_SECS` (default 300) /
 `STUB_AUTH_ALLOWED` (default false) / `STUB_APP_TOKEN_ALLOWED` (default false)。
 
+### events publish (`POST /v1/events`)
+
+`register_resource` scope を持つ product-token (`X-App-Token: cht_...`) で publish する。
+envelope は `event_id` / `app_id` / `kind` (`resource.created|updated|deleted`) /
+`idempotency` / `emitted_at` + `resource` object を必須とする (`model.rs::validate_envelope`)。
+受理は **202**、 resource tree への投影は consumer が非同期で行う (publish 直後の read には現れない)。
+
+```bash
+curl -X POST http://localhost:3000/v1/events \
+  -H "X-App-Token: cht_..." -H "Content-Type: application/json" \
+  -d '{
+    "event_id": "ev_1",
+    "app_id": "creo-memories",
+    "kind": "resource.created",
+    "idempotency": "idem_1",
+    "emitted_at": "2026-06-13T00:00:00Z",
+    "resource": {
+      "id": "atlas_1",
+      "type": "memories-atlas",
+      "path": "/creo-memories/atlas_1",
+      "handle": "mito",
+      "visibility": "public",
+      "payload": { "title": "My Atlas" },
+      "createdAt": "2026-06-13T00:00:00Z",
+      "updatedAt": "2026-06-13T00:00:00Z"
+    }
+  }'
+# → 202 {"accepted":true,"event_id":"ev_1"}
+# 投影後: GET /v1/tree/mito (or /v1/tree/@mito、@ は任意) で resource が読める
+```
+
 > TS/Bun 版 (旧実装) は branch `feat/persistence-surrealdb` に参照保存。
 
 ## Codegen / spec (Bun)
