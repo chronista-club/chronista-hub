@@ -1,0 +1,41 @@
+// Chronista Hub — Unison protocol schema。
+// world↔hub の registry/discovery を Unison channel (QUIC) で提供する。
+// resource ingestion / tree read は REST (axum) 据え置き。
+//
+// MVP scope: 単一 hub 内で 2 つの VP world が相互に discovery する (ADR pending、
+// federation = multi-hub は ~6-12mo)。`unison.discovery` は enable_discovery が配信する
+// self-description channel (server 自身の protocol.kdl + hash)。
+protocol "chronista-hub" version="0.1.0" {
+    namespace "club.chronista.hub"
+
+    // self-description — server が自分の KDL を hash 付きで返す (club-unison 組込)。
+    channel "unison.discovery" from="client" lifetime="persistent" {
+        request "GetProtocol" {
+            field "format" type="string" required=#true
+            returns "ProtocolDocument" {
+                field "kdl" type="string" required=#true
+                field "version" type="string" required=#true
+                field "hash" type="string" required=#true
+                field "codecs" type="json" required=#true
+            }
+        }
+    }
+
+    // world registry — VP world が自分を hub に登録し、互いを発見する。
+    channel "worlds" from="client" lifetime="persistent" {
+        request "Register" description="Register a VP world into the hub registry so other worlds can discover it." {
+            field "handle" type="string" required=#true
+            field "name" type="string"
+            returns "Registered" {
+                field "handle" type="string" required=#true
+                field "registered_at" type="string" required=#true
+            }
+        }
+
+        request "Discover" description="List VP worlds registered in this hub, for mutual discovery." {
+            returns "WorldList" {
+                field "worlds" type="json" required=#true
+            }
+        }
+    }
+}
