@@ -12,10 +12,10 @@
 use anyhow::Result;
 use serde_json::json;
 
+use unison::ProtocolClient;
 use unison::network::channel::UnisonChannel;
 use unison::network::discovery::{DISCOVERY_CHANNEL_NAME, GET_PROTOCOL_METHOD, ProtocolDocument};
 use unison::network::{MessageType, ProtocolServer};
-use unison::ProtocolClient;
 
 /// spike 用最小 KDL — discovery 自身 + echo channel。
 const SPIKE_KDL: &str = r#"
@@ -105,8 +105,15 @@ async fn main() -> Result<()> {
     let doc: ProtocolDocument = serde_json::from_value(dval)?;
     assert_eq!(doc.version, "0.0.1", "discovery version mismatch");
     assert_eq!(doc.hash.len(), 64, "discovery hash should be sha256 hex");
-    assert!(doc.kdl.contains("hub-spike"), "kdl should echo protocol name");
-    println!("✓ discovery OK: version={} hash={}…", doc.version, &doc.hash[..16]);
+    assert!(
+        doc.kdl.contains("hub-spike"),
+        "kdl should echo protocol name"
+    );
+    println!(
+        "✓ discovery OK: version={} hash={}…",
+        doc.version,
+        &doc.hash[..16]
+    );
     dchan.close().await?;
 
     // 2) echo channel round-trip

@@ -99,6 +99,8 @@ async fn handle_worlds(storage: &Storage, method: &str, payload: Value) -> Resul
                 .collect();
             Ok(json!({ "worlds": list }))
         }
-        other => Err(anyhow::anyhow!("unknown method '{other}' on channel 'worlds'")),
+        other => Err(anyhow::anyhow!(
+            "unknown method '{other}' on channel 'worlds'"
+        )),
     }
 }
