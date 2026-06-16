@@ -9,6 +9,8 @@ pub struct Config {
     pub db_path: String,
     pub auto_migrate: bool,
     pub migrations_dir: String,
+    /// Unison (QUIC) surface の listen address (world registry/discovery channel)。
+    pub unison_addr: String,
     pub auth: AuthConfig,
 }
 
@@ -62,6 +64,8 @@ impl Config {
             auto_migrate: std::env::var("AUTO_MIGRATE_ENABLED").as_deref() == Ok("true"),
             migrations_dir: std::env::var("MIGRATIONS_DIR")
                 .unwrap_or_else(|_| "./migrations".into()),
+            unison_addr: std::env::var("CHRONISTA_HUB_UNISON_ADDR")
+                .unwrap_or_else(|_| "[::1]:7879".into()),
             auth: AuthConfig {
                 issuer,
                 jwks_url,

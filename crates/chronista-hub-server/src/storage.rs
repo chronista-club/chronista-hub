@@ -184,6 +184,46 @@ impl Storage {
             .check()?;
         Ok(())
     }
+
+    /// world registry: `vp-world` resource を upsert (createdAt/updatedAt は DB 側
+    /// `time::now()` を string cast、 既存 REST 行の string 形式に揃える)。 registered_at を返す。
+    /// Unison `worlds.Register` の backing。 tree read (`/v1/tree/@handle`) にも即現れる。
+    pub async fn register_world(&self, handle: &str, name: &str) -> anyhow::Result<String> {
+        let rid = format!("vp-world:{handle}");
+        let rows: Vec<Value> = self
+            .db
+            .query(
+                "UPSERT type::record('hub_resource', $rid) CONTENT {
+                    rid: $rid, type: 'vp-world', path: '/', handle: $handle,
+                    visibility: 'public', payload: { name: $name },
+                    createdAt: <string> time::now(), updatedAt: <string> time::now()
+                };",
+            )
+            .bind(("rid", rid))
+            .bind(("handle", handle.to_string()))
+            .bind(("name", name.to_string()))
+            .await?
+            .take(0)?;
+        let registered_at = rows
+            .first()
+            .and_then(|r| r.get("createdAt"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        Ok(registered_at)
+    }
+
+    /// 全 handle 横断で type 指定の resource を列挙 (discovery 用)。
+    /// `get_resources_by_handle` と違い handle scope を要求しない。
+    pub async fn list_resources_by_type(&self, rtype: &str) -> anyhow::Result<Vec<Resource>> {
+        let rows: Vec<Value> = self
+            .db
+            .query("SELECT * FROM hub_resource WHERE type = $rtype ORDER BY createdAt")
+            .bind(("rtype", rtype.to_string()))
+            .await?
+            .take(0)?;
+        rows_to_resources(rows)
+    }
 }
 
 /// SurrealDB の SELECT 結果 (Vec<Value>) を Resource へ。 record id `id` 等 extra key は無視。

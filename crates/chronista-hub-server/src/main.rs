@@ -27,6 +27,12 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // rustls の process-level CryptoProvider を明示 install。 hub graph には aws-lc-rs
+    // (surrealdb/reqwest) と ring (quinn/club-unison) が両方入り、 rustls 0.23 が default を
+    // auto-detect できず panic する。 quinn が使う ring を選ぶ (既存 reqwest/surrealdb は
+    // 各自 explicit config なので影響なし)。 二重 install は無視。
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cfg = Config::from_env();
 
     let db = connect_rocksdb(&cfg.db_path, &cfg.namespace, &cfg.database).await?;
@@ -44,6 +50,13 @@ async fn main() -> anyhow::Result<()> {
     let event_log = EventLog::new(db.clone());
     let product_tokens = ProductTokenStore::new(db.clone());
     let consumer = spawn_consumer(event_log.clone(), storage.clone(), 1000);
+
+    // Unison (QUIC) surface — world registry/discovery channel。 axum と同一 tokio runtime。
+    // handle を drop すると shutdown するので、 プロセス生存期間 hold する (`_unison`)。
+    let _unison =
+        chronista_hub_server::unison_server::spawn_unison(&cfg.unison_addr, storage.clone())
+            .await
+            .context("spawn Unison surface")?;
 
     let (verifier, jwks_verifier) = build_verifier(&cfg.auth).await?;
 

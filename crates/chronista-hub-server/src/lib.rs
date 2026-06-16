@@ -11,6 +11,7 @@ pub mod event_log;
 pub mod model;
 pub mod product_token;
 pub mod storage;
+pub mod unison_server;
 
 pub const SERVICE_NAME: &str = "chronista-hub";
 pub const VERSION: &str = "0.0.1";

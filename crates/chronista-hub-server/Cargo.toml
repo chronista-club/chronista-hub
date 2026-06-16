@@ -27,6 +27,11 @@ reqwest.workspace = true
 rand.workspace = true
 sha2.workspace = true
 subtle.workspace = true
+# 次世代通信基盤 (QUIC + KDL discovery)。 world registry/discovery channel を提供。
+club-unison = { workspace = true }
+# quinn 用 rustls provider を main.rs で明示 install する (aws-lc-rs/ring が両方 graph に
+# 入り auto-detect 不能 → ring を default 指定)。
+rustls = { version = "0.23", features = ["ring"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
