@@ -14,4 +14,4 @@ pub mod storage;
 pub mod unison_server;
 
 pub const SERVICE_NAME: &str = "chronista-hub";
-pub const VERSION: &str = "0.0.1";
+pub const VERSION: &str = "0.1.0";

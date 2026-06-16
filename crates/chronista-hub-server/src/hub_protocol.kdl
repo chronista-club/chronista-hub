@@ -5,7 +5,7 @@
 // MVP scope: 単一 hub 内で 2 つの VP world が相互に discovery する (ADR pending、
 // federation = multi-hub は ~6-12mo)。`unison.discovery` は enable_discovery が配信する
 // self-description channel (server 自身の protocol.kdl + hash)。
-protocol "chronista-hub" version="0.0.1" {
+protocol "chronista-hub" version="0.1.0" {
     namespace "club.chronista.hub"
 
     // self-description — server が自分の KDL を hash 付きで返す (club-unison 組込)。
