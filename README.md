@@ -45,6 +45,16 @@ Hub server は **Rust + axum + embedded SurrealDB (kv-rocksdb)** で実装 (ADR-
 DB は別プロセス不要の in-process embedded。 起動時 `AUTO_MIGRATE_ENABLED=true` で `migrations/*.surql` を
 listen 前に適用する。
 
+**build 要件 (system tools)**: `protoc` (club-unison の protobuf build に必須) / `clang`
+(surrealdb kv-rocksdb の `librocksdb-sys` bindgen に必須)。 未導入だと build script が失敗する。
+
+```bash
+# macOS (Homebrew)
+brew install protobuf llvm
+# Debian / Ubuntu
+sudo apt-get install -y protobuf-compiler clang
+```
+
 ```bash
 # build / lint / test (SurrealDB は in-process なので別プロセス不要)
 cargo build
