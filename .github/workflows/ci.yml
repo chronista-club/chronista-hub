@@ -16,9 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # librocksdb-sys (surrealdb kv-rocksdb) の bindgen は libclang を要求する。
+      # librocksdb-sys (surrealdb kv-rocksdb) の bindgen は libclang を、
+      # club-unison の build script (buffa/protobuf) は protoc を要求する。
       - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y clang
+        run: sudo apt-get update && sudo apt-get install -y clang protobuf-compiler
 
       - uses: dtolnay/rust-toolchain@stable
         with:
