@@ -1,0 +1,51 @@
+# Chronista Hub server (scratch) — Podman Quadlet container unit (rootless)。
+#
+# World Tree meta-registry。 REST(axum/TCP) + Unison(club-unison QUIC/UDP) を
+# 1 バイナリで提供 (embedded SurrealDB kv-rocksdb、 ADR-016/018)。
+#
+# === デプロイ形態: rootless (linuxbrew user)、 fleet-worker-01 相乗り ===
+# anycreative tenant convention (creo-memories と同 idiom)。
+#
+# 配置 (fleet-worker-01 上):
+#   ~linuxbrew/.config/containers/systemd/chronista-hub-scratch-server.container
+#   → systemctl --user daemon-reload で .service 生成
+#   → systemctl --user start chronista-hub-scratch-server.service
+#
+# 前提:
+#   - image `ghcr.io/chronista-club/chronista-hub-server:latest` を pull 済
+#     (build-images.yml が main push で push)
+#   - %h/chronista-hub/.env.scratch.server を op inject で生成済
+#   - %h/chronista-hub/data/scratch/ ディレクトリを mkdir 済 (RocksDB 永続化)
+#
+# Port:
+#   - 12780:3000/tcp  REST → Caddy が hub.scratch.chronista.club を HTTPS 終端し reverse_proxy
+#   - 12779:7879/udp  Unison(QUIC) → Caddy を通さず直 expose。 federation addr =
+#     hub.scratch.chronista.club:12779 (firewall で inbound UDP 12779 を許可すること)
+# TODO(infra): fleet-worker-01 上の 1277x/1278x port 衝突を要確認 (creo は 120xx-124xx)
+
+[Unit]
+Description=Chronista Hub server (scratch) — World Tree meta-registry (REST + Unison/QUIC)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/chronista-club/chronista-hub-server:latest
+ContainerName=chronista-hub-scratch-server
+EnvironmentFile=%h/chronista-hub/.env.scratch.server
+# REST (axum/TCP)
+PublishPort=12780:3000/tcp
+# Unison (QUIC/UDP) — Caddy を通さず直 expose
+PublishPort=12779:7879/udp
+# embedded RocksDB の永続化 volume
+Volume=%h/chronista-hub/data/scratch:/app/data:z
+
+Label=fleetflow.project=chronista-hub
+Label=fleetflow.stage=scratch
+Label=fleetflow.service=chronista-hub-server
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

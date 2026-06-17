@@ -1,0 +1,16 @@
+# chronista-hub scratch — Caddy site block (REST のみ)。
+#
+# fleet-worker-01 上の Caddy に取り込む (共有 Caddy なら import、 hub 専用なら
+# このファイルを Caddyfile として mount)。 Caddy が Let's Encrypt で自動 TLS。
+#
+# 前提: DNS A record `hub.scratch.chronista.club` → fleet-worker-01、 host で
+#       inbound TCP 80/443 を許可。
+#
+# ⚠️ Unison(QUIC/UDP 12779) は **ここに含めない**。 QUIC は Caddy(HTTP) を通さず
+#    container が host UDP 12779 を直 expose する (firewall で UDP 12779 許可)。
+#    federation addr = hub.scratch.chronista.club:12779
+
+hub.scratch.chronista.club {
+    # REST(axum) は container host port 12780 (PublishPort 12780:3000/tcp)
+    reverse_proxy localhost:12780
+}
