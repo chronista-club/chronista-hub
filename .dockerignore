@@ -1,0 +1,10 @@
+# build context を絞る (COPY . . が target/ 等の巨大物を取り込まないように)。
+/target
+/data
+**/*.rocksdb
+.git
+.github
+# bun workspace の node_modules は Rust build に不要
+**/node_modules
+# docs / spec は image に不要 (migrations だけ Dockerfile が明示 COPY する)
+/docs

@@ -1,0 +1,80 @@
+// Chronista Hub — FleetFlow 設定 (KDL)。
+//
+// stage ladder: demo(local) → scratch → rehearsal → live(=prod)。
+// host 命名: {service}.{stage}.chronista.club (stage は live で省略)。
+//   - scratch: hub.scratch.chronista.club  (REST=Caddy HTTPS / Unison=UDP 直 expose)
+//   - live:    hub.chronista.club          (apex chronista.club は portal、/@handle を alias proxy)
+//
+// deploy SSOT は CLI ではなく Quadlet `.container` (creo-memories と同 idiom、
+// fleet-worker-01 上 rootless `systemctl --user`)。 本 fleet.kdl は service の
+// canonical spec 参照。 実 deploy 値は `.env.{stage}.server` を op inject で生成。
+
+project "chronista-hub"
+
+variables {
+    SURREALDB_NAMESPACE "chronista"
+    SURREALDB_DATABASE "hub"
+}
+
+// ============================================================
+// scratch stage — fleet-worker-01 相乗り (anycreative tenant)
+// ============================================================
+stage "scratch" {
+    server "fleet-worker-01"
+
+    variables {
+        STAGE "scratch"
+        PROJECT_ROOT "/home/linuxbrew/chronista-hub"
+        // 公開ホスト名 (Caddy 自動 TLS)
+        REST_HOST "hub.scratch.chronista.club"
+    }
+
+    service "chronista-hub-server"
+}
+
+// ============================================================
+// chronista-hub-server — REST(axum/TCP) + Unison(QUIC/UDP) 同居 1 container
+// ============================================================
+// binary は stage 非依存。 image も stage 非依存 (chronista-hub-server)。
+// stage 差は env (.env.{stage}.server) でのみ与える。
+service "chronista-hub-server" {
+    image "ghcr.io/chronista-club/chronista-hub-server:latest"
+    restart "unless-stopped"
+
+    build {
+        dockerfile "./Dockerfile"
+        context "."
+    }
+
+    ports {
+        // REST (axum/TCP) — Caddy が HTTPS 終端して reverse_proxy する内部 port
+        // TODO(infra): fleet-worker-01 上の port 衝突を確認 (creo は 120xx-124xx 帯)
+        port host=12780 container=3000
+        // Unison (QUIC/UDP) — Caddy を通さず直 expose。 federation addr の port。
+        port host=12779 container=7879 protocol="udp"
+    }
+
+    env {
+        // REST
+        CHRONISTA_HUB_PORT "3000"
+        // Unison: container 内は全 interface bind ([::]) — loopback default を override
+        CHRONISTA_HUB_UNISON_ADDR "[::]:7879"
+        // embedded SurrealDB (kv-rocksdb)
+        CHRONISTA_HUB_DB_PATH "/app/data/hub.rocksdb"
+        SURREALDB_NAMESPACE "{{ SURREALDB_NAMESPACE | default(value='chronista') }}"
+        SURREALDB_DATABASE "{{ SURREALDB_DATABASE | default(value='hub') }}"
+        AUTO_MIGRATE_ENABLED "true"
+        MIGRATIONS_DIR "/app/migrations"
+        // scratch = no-auth sandbox (OR 先例: scratch は no-auth public)。
+        // 実 auth に上げるなら STUB_AUTH_ALLOWED を外し CREO_ID_* + JWKS を設定。
+        STUB_AUTH_ALLOWED "true"
+        STUB_APP_TOKEN_ALLOWED "true"
+        RUST_LOG "info"
+        // admin API は op secret が要れば .env で注入 (未設定なら 404 = 無効)
+    }
+
+    volumes {
+        // embedded RocksDB の永続化 (再起動で残す)
+        volume host="{{ PROJECT_ROOT | default(value='.') }}/data/scratch" container="/app/data"
+    }
+}
