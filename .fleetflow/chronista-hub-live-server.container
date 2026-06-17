@@ -1,0 +1,50 @@
+# Chronista Hub server (live) — Podman Quadlet container unit (rootless)。
+#
+# World Tree meta-registry。 REST(axum/TCP) + Unison(club-unison QUIC/UDP) を
+# 1 バイナリで提供 (embedded SurrealDB kv-rocksdb、 ADR-016/018)。
+# 命名 ADR-019: live は subdomain prefix 省略 = hub.chronista.club。
+#
+# === デプロイ形態: rootless (linuxbrew user)、 fleet-worker-01 相乗り ===
+#
+# 配置 (fleet-worker-01 上):
+#   ~linuxbrew/.config/containers/systemd/chronista-hub-live-server.container
+#   → systemctl --user daemon-reload && start
+#
+# 前提:
+#   - image `ghcr.io/chronista-club/chronista-hub-server:latest` (stage 非依存)
+#   - %h/chronista-hub/.env.live.server を op inject で生成済 (実 secret あり)
+#   - %h/chronista-hub/data/live/ を mkdir 済
+#
+# Port (scratch の 1277x/1278x と衝突しない live 帯 1288x):
+#   - 12880:3000/tcp  REST → Caddy が hub.chronista.club を HTTPS 終端し reverse_proxy
+#   - 12879:7879/udp  Unison(QUIC) → 直 expose。 federation addr = hub.chronista.club:12879
+#
+# ⚠️ LIVE 前提の未充足 (code gap、 deploy 前に要対応。 DEPLOY.md「live」参照):
+#   1. Unison cert: 現状 dev self-signed (SkipVerification)。 live は proper cert /
+#      TrustAnchors が要る (hub code に CertSource 設定が未実装、 ADR-018 の負債)。
+#   2. /@handle public route: hub は現状 /v1/tree/{handle} のみ。 canonical /@handle 未実装。
+#   3. portal: apex chronista.club の landing service 未作成。
+
+[Unit]
+Description=Chronista Hub server (live) — World Tree meta-registry (REST + Unison/QUIC)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/chronista-club/chronista-hub-server:latest
+ContainerName=chronista-hub-live-server
+EnvironmentFile=%h/chronista-hub/.env.live.server
+PublishPort=12880:3000/tcp
+PublishPort=12879:7879/udp
+Volume=%h/chronista-hub/data/live:/app/data:z
+
+Label=fleetflow.project=chronista-hub
+Label=fleetflow.stage=live
+Label=fleetflow.service=chronista-hub-server
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
