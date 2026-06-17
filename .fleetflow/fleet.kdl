@@ -33,10 +33,28 @@ stage "scratch" {
 }
 
 // ============================================================
+// live stage — fleet-worker-01 相乗り。 hub.chronista.club (ADR-019、 prefix 省略)
+// ============================================================
+// ⚠️ live federation は Unison cert の code 対応が前提 (DEPLOY.md「live」参照)。
+//    portal は pure Caddy (app 実装を入れない)。 public-web の /@handle は hub app 側 #2。
+stage "live" {
+    server "fleet-worker-01"
+
+    variables {
+        STAGE "live"
+        PROJECT_ROOT "/home/linuxbrew/chronista-hub"
+        REST_HOST "hub.chronista.club"
+    }
+
+    service "chronista-hub-server"
+}
+
+// ============================================================
 // chronista-hub-server — REST(axum/TCP) + Unison(QUIC/UDP) 同居 1 container
 // ============================================================
-// binary は stage 非依存。 image も stage 非依存 (chronista-hub-server)。
-// stage 差は env (.env.{stage}.server) でのみ与える。
+// binary / image は stage 非依存 (chronista-hub-server)。 stage 差は env でのみ与える。
+// 下記 env は scratch 寄りの reference default (STUB_AUTH 等)。 実 deploy 値は stage 別
+// `.env.{stage}.server` が SSOT (live は実 Creo ID JWKS auth、 .env.live 参照)。
 service "chronista-hub-server" {
     image "ghcr.io/chronista-club/chronista-hub-server:latest"
     restart "unless-stopped"
