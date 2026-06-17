@@ -60,3 +60,4 @@ ADR は spec ↔ memory の橋。 spec を読んで "なぜ?" と思ったら AD
 | [ADR-016](./ADR-016-server-language-rust-embedded-surrealdb.md) | Hub server を Rust + embedded SurrealDB で実装 (低レイテンシ) | Accepted | 2026-06-11 | ADR-001 / repo戦略 |
 | [ADR-017](./ADR-017-product-token-opaque.md) | product-token は opaque + DB hash (即時 revoke) | Accepted | 2026-06-12 | ADR-010 Phase 2 |
 | [ADR-018](./ADR-018-world-hub-discovery-transport-unison.md) | world↔hub discovery transport — Unison (QUIC) over REST | Accepted | 2026-06-16 | #13, #12, ADR-014/016 |
+| [ADR-019](./ADR-019-host-naming-apex-portal-canonical.md) | Host 命名 + apex portal + canonical=`hub.chronista.club/@handle` | Accepted | 2026-06-17 | supersedes ADR-012 canonical / ADR-018 |
