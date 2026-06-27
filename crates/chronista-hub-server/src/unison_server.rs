@@ -172,9 +172,33 @@ async fn handle_worlds(
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or(handle);
-            let registered_at = storage.register_world(handle, name).await?;
-            tracing::info!(handle, "world registered via Unison");
-            Ok(json!({ "handle": handle, "registered_at": registered_at }))
+            // wld_id (location 独立 routing key) / endpoints (direct 到達候補) は additive、
+            // 旧 client は省略 → None / 空配列で後方互換 (ADR-020 §S2)。
+            let wld_id = payload.get("wld_id").and_then(|v| v.as_str());
+            let endpoints: Vec<String> = payload
+                .get("endpoints")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let registered_at = storage
+                .register_world(wld_id, handle, name, &endpoints)
+                .await?;
+            tracing::info!(
+                handle,
+                ?wld_id,
+                endpoint_count = endpoints.len(),
+                "world registered via Unison"
+            );
+            Ok(json!({
+                "wld_id": wld_id,
+                "handle": handle,
+                "registered_at": registered_at,
+                "endpoints": endpoints,
+            }))
         }
         "Discover" => {
             authorize_federation(principal, "federation.read", auth_required)?;
@@ -183,8 +207,10 @@ async fn handle_worlds(
                 .iter()
                 .map(|w| {
                     json!({
+                        "wld_id": w.payload.get("wld_id").and_then(|v| v.as_str()),
                         "handle": w.handle,
                         "name": w.payload.get("name").and_then(|v| v.as_str()).unwrap_or(&w.handle),
+                        "endpoints": w.payload.get("endpoints").cloned().unwrap_or_else(|| json!([])),
                         "registered_at": w.created_at,
                     })
                 })
