@@ -62,7 +62,10 @@ async fn main() -> Result<()> {
     // HUB_CRED があれば federation auth credential (Creo ID JWT 等) として提示 (ADR-020 §S3)。
     let cred = std::env::var("HUB_CRED").ok().filter(|s| !s.is_empty());
     let cred = cred.as_deref().map(str::as_bytes);
-    println!("hub Unison surface: {addr} (auth: {})\n", if cred.is_some() { "credential" } else { "none" });
+    println!(
+        "hub Unison surface: {addr} (auth: {})\n",
+        if cred.is_some() { "credential" } else { "none" }
+    );
 
     // 1) 2 world をそれぞれ別 client で register
     let a = register(&addr, "world-a", "World A", cred).await?;
