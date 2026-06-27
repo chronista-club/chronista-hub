@@ -32,5 +32,6 @@ subtle = "2"
 # JWKS fetch 専用 (起動時 1 回)。 TLS は aws-lc-rs (surrealdb と provider 一致)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # 次世代通信基盤 (QUIC + KDL discovery)。 package = club-unison、 lib identifier = `unison`。
-# world↔hub discovery を Unison channel で行う (crates.io 公開、 ADR pending)。
-club-unison = "1.1.0"
+# world↔hub discovery を Unison channel で行う (crates.io 公開、 ADR-018)。
+# 1.2.0: spawn_listen_with_cert (federation cert gap)、 1.3.0: raw QUIC ALPN "unison"。
+club-unison = "1.3.0"

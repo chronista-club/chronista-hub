@@ -53,10 +53,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Unison (QUIC) surface — world registry/discovery channel。 axum と同一 tokio runtime。
     // handle を drop すると shutdown するので、 プロセス生存期間 hold する (`_unison`)。
-    let _unison =
-        chronista_hub_server::unison_server::spawn_unison(&cfg.unison_addr, storage.clone())
-            .await
-            .context("spawn Unison surface")?;
+    let _unison = chronista_hub_server::unison_server::spawn_unison(
+        &cfg.unison_addr,
+        cfg.unison_cert.clone(),
+        cfg.unison_cert_out.clone(),
+        storage.clone(),
+    )
+    .await
+    .context("spawn Unison surface")?;
 
     let (verifier, jwks_verifier) = build_verifier(&cfg.auth).await?;
 

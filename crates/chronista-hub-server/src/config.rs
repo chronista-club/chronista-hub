@@ -11,7 +11,25 @@ pub struct Config {
     pub migrations_dir: String,
     /// Unison (QUIC) surface の listen address (world registry/discovery channel)。
     pub unison_addr: String,
+    /// Unison surface の TLS cert source (ADR-020 §S1)。
+    pub unison_cert: UnisonCert,
+    /// self-signed mode で生成 cert DER を書き出すパス (非 loopback client が
+    /// `TrustAnchors::Custom` に pin する用)。 None なら書き出さない。
+    pub unison_cert_out: Option<String>,
     pub auth: AuthConfig,
+}
+
+/// Unison (QUIC) surface の TLS cert source (ADR-020 §S1)。
+///
+/// - `Dev`: dev_localhost (loopback のみ、 client は SkipVerification)。 default。
+/// - `SelfSigned`: 指定 SAN の self-signed (非 loopback = tailnet/scratch 解禁)。
+///   client は cert DER を `TrustAnchors::Custom` に pin する (hash でなく cert そのもの)。
+/// - `File`: cert + key をファイルから (proper PKI = live、 client は System trust)。
+#[derive(Debug, Clone)]
+pub enum UnisonCert {
+    Dev,
+    SelfSigned { sans: Vec<String> },
+    File { cert_path: String, key_path: String },
 }
 
 /// 認証設定。 default は ecosystem canonical Creo ID (ADR-002/010)。
@@ -52,6 +70,31 @@ impl Config {
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| vec!["chronista-hub".into()]);
 
+        let unison_cert = match std::env::var("CHRONISTA_HUB_CERT_MODE").as_deref() {
+            Ok("self-signed") | Ok("selfsigned") => {
+                let sans = std::env::var("CHRONISTA_HUB_CERT_SANS")
+                    .ok()
+                    .map(|s| {
+                        s.split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(String::from)
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| vec!["localhost".into(), "::1".into(), "127.0.0.1".into()]);
+                UnisonCert::SelfSigned { sans }
+            }
+            Ok("file") => UnisonCert::File {
+                cert_path: std::env::var("CHRONISTA_HUB_CERT_PATH").unwrap_or_default(),
+                key_path: std::env::var("CHRONISTA_HUB_CERT_KEY_PATH").unwrap_or_default(),
+            },
+            _ => UnisonCert::Dev,
+        };
+        let unison_cert_out = std::env::var("CHRONISTA_HUB_CERT_OUT")
+            .ok()
+            .filter(|s| !s.is_empty());
+
         Config {
             port: std::env::var("CHRONISTA_HUB_PORT")
                 .ok()
@@ -66,6 +109,8 @@ impl Config {
                 .unwrap_or_else(|_| "./migrations".into()),
             unison_addr: std::env::var("CHRONISTA_HUB_UNISON_ADDR")
                 .unwrap_or_else(|_| "[::1]:7879".into()),
+            unison_cert,
+            unison_cert_out,
             auth: AuthConfig {
                 issuer,
                 jwks_url,
