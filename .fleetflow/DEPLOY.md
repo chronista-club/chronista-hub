@@ -162,22 +162,28 @@ VP 側はこの DER を取得し `TrustAnchors::Custom` に pin（hostname dial 
 → public scale（「誰でも繋がる」）に上げる時は `.env.live` を `CHRONISTA_HUB_CERT_MODE=file`
 + 実 CA cert にし、VP は System trust（cert 配布不要）。
 
-### Step 2-5. deploy（scratch と同型、 差分のみ）
-- `.env.live.server` は **`op inject` 必須**（`HUB_ADMIN_KEY` + 実 Creo ID JWKS auth）。stub にしない。
-- port 衝突確認（`12880/tcp`, `12879/udp`）。image pull。`mkdir -p ~/chronista-hub/data/live`。
-- Quadlet 配置 → `loginctl enable-linger` → `systemctl --user daemon-reload && start`。
-- Caddy: `Caddyfile.live`（hub.chronista.club + apex）取り込み → reload（REST の HTTPS/LE）。
+### Step 2-5. deploy（rootless、 tailscale SSH で実施可。 2026-06-28 実績）
+- `.env.live.server`: template から生成。`HUB_ADMIN_KEY` は op inject で入れる or **省略可**（未設定 = admin API 404 で無効、 federation には不要）。実 Creo ID JWKS auth（stub にしない）。
+- `mkdir -p ~/chronista-hub/data/live` → Quadlet を `~/.config/containers/systemd/` に配置 → `systemctl --user daemon-reload && systemctl --user start chronista-hub-live-server`。`loginctl enable-linger`。
+- **⚠️ stale-image 罠**: podman は local に `:latest` cache が在ると**再 pull しない**。quadlet に **`Pull=newer`** を入れてあるので restart で最新を取得。手動なら `podman pull ...:latest` → restart（2026-06-28 に古い `:latest` を掴み federation コード無しで起動 → cert ログ/起動順序の不在で検知）。
+- **firewall（ufw、 sudo = root login 要）**: `sudo ufw allow 12879/udp`（Unison federation）。`80,443/tcp` は許可済（Caddy）、 `tailscale0` 全許可。**`12880/tcp` は開けない**（REST は Caddy or host loopback）。default deny(incoming) なので **12879/udp 未許可だと QUIC が沈黙**（TCP timeout / UDP の `nc -uz` は DROP でも誤 success に注意）。
+- Caddy（REST HTTPS / handle ページ、 federation には不要）: `Caddyfile.live` 取り込み → reload。
 
-### 検証（federation 疎通）
+### 検証（federation 疎通）★2026-06-28 公開越し実証済
 ```bash
-curl -fsS https://hub.chronista.club/health                       # REST (Caddy/HTTPS)
-# VP daemon: hub を hostname で dial (AAAA → GUA) + cert DER を Custom pin
-#   CHRONISTA_HUB_ADDR=hub.chronista.club:12879
-# → 実 world が register(wld_id+endpoints)/discover、REST tree にも出る:
-curl -fsS https://hub.chronista.club/v1/tree/<world-handle>
+# REST health（host loopback。 Caddy 公開後は https://hub.chronista.club/health）
+ssh linuxbrew@<host> 'curl -fsS http://localhost:12880/health'
+# hub の self-signed cert DER を取得（client が TrustAnchors::Custom に pin する材料）
+ssh linuxbrew@<host> 'cat ~/chronista-hub/data/live/unison-cert.der' > hub-cert.der
+# 公開越しに cert-pin で register/discover round-trip を確認
+#   (worlds_demo は SkipVerification=loopback 限定 → 非 loopback 公開 hub は live_probe を使う)
+HUB_CERT=hub-cert.der HUB_ADDR=hub.chronista.club:12879 \
+  cargo run -p chronista-hub-server --example live_probe
+#   → ✓ QUIC connect (cert pin) / ✓ Register / ✓ Discover
+# VP 実 world: daemon に CHRONISTA_HUB_ADDR=hub.chronista.club:12879 + 同 cert を Custom pin
 ```
 
 ### 注意
 - live = 実データ・実 auth（Creo ID JWKS）。scratch のように捨てられない。
 - **federation auth** は当面 `permissive`（VP が `connect_with_credential` で Creo ID JWT を出すまで）。VP 追従後に `CHRONISTA_HUB_FEDERATION_AUTH=required` へ。
-- **full 疎通**（world A → world B の direct/relay dial）は **VP dialer + hub S4 relay** 待ち。本 deploy は register/discover/auth/cert を実ネットで先行検証する段（IPv6 GUA 到達 + cert path の実証）。
+- **full 疎通**（world A → world B の direct/relay dial）は **VP dialer + hub S4 relay** 待ち。本 deploy は register/discover/auth/cert を実ネットで先行検証する段（**公開 IPv4 到達 + cert pin path を 2026-06-28 実証済**。world↔world の IPv6 GUA direct は worlds 側）。

@@ -34,6 +34,9 @@ Wants=network-online.target
 
 [Container]
 Image=ghcr.io/chronista-club/chronista-hub-server:latest
+# :latest は local cache が在ると podman が再 pull しない → restart 時に registry の最新を取得。
+# (2026-06-28 に古い :latest を掴む stale-image 罠を踏んだ。DEPLOY.md「live」参照)
+Pull=newer
 ContainerName=chronista-hub-live-server
 EnvironmentFile=%h/chronista-hub/.env.live.server
 PublishPort=12880:3000/tcp
