@@ -126,9 +126,22 @@ live は subdomain prefix 省略。config skeleton は揃っているが、**dep
 → live **federation** を回すのに残るのは **op 設定（IPv6 GUA 到達性 + cert 配布）** のみ。
 
 ### 接続の principal = IPv6 GUA（ADR-020 D3 / council 2026-06-28）
-tailnet 依存は外した。federation の direct data-path は **IPv6 GUA**（overlay 不要、cross-internet 直結、障壁は firewall のみ）。VP は hub を **hostname `hub.chronista.club`（AAAA → GUA）で dial** → cert SAN は安定 DNS 名で済む（動的 GUA を IP-SAN に焼かない）。direct 全滅時は hub relay（S4、未実装）。
+tailnet 依存は外した。federation の direct data-path は **IPv6 GUA**（overlay 不要、cross-internet 直結）。**ただし IPv6 GUA principal は world↔world direct の話** — worlds が自身の GUA を advertise（S2 で hub が交換）し peer 同士が直結する。**hub の住所ではない**: hub は discovery/relay の合流点で、worlds が到達できれば IPv4 で足りる。direct 全滅時は hub relay（S4、未実装）。
 
-### Step 0. IPv6 GUA 到達性（最優先 — ここが principal）
+> **🟢 デプロイ決定（2026-06-28, mito）= hub は IPv4 で立てる**。fleet-worker-01 は Sakura 共有セグメント＝**IPv4-only**（`163.43.117.17`、IPv6 GUA 無し。usacloud で確認済）。world 間は IPv6 GUA direct で動くので **hub は IPv4 で OK**（world 的には IPv6 で federation する）。現行 DNS は **`A hub.chronista.club → 163.43.117.17`** のみ（AAAA 不要）。hub 自身の IPv6 化（Sakura router+switch ~¥2-3k/月 / Fly.io）は IPv6-only peer 完全対応が要る時の **将来 option**（worlds 無改修で差し替え可）。
+
+### Step 0（現行 IPv4）. DNS + 到達性
+```bash
+# DNS (CF token で設定): hub は IPv4 のみ
+#   A  hub.chronista.club → 163.43.117.17    (REST/Caddy + Unison QUIC 両方)
+# firewall (fleet-worker-01): UDP 12879 (Unison) + TCP 80/443 (Caddy)
+#   例(ufw): sudo ufw allow 12879/udp ; sudo ufw allow 80,443/tcp
+# 到達 smoke:
+nc -uvz hub.chronista.club 12879 ; curl -fsS https://hub.chronista.club/health
+```
+
+### （将来 option）hub 自身を IPv6 GUA 化する場合（Sakura router+switch / Fly.io）
+> 下記は hub を IPv6 到達可能にしたくなった時用（IPv6-only peer 対応）。現行 IPv4 deploy には不要。
 ```bash
 # (a) fleet-worker-01 が安定 IPv6 GUA を持つか
 ip -6 addr show scope global | grep inet6          # 2000::/3 の GUA があること
