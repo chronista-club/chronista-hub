@@ -22,6 +22,16 @@ pub enum Principal {
     },
 }
 
+impl Principal {
+    /// principal が持つ scope 一覧 (User/App 共通)。 federation scope 検証等に使う。
+    pub fn scopes(&self) -> &[String] {
+        match self {
+            Principal::User { scopes, .. } => scopes,
+            Principal::App { scopes, .. } => scopes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrincipalKind {
     User,
@@ -230,10 +240,7 @@ pub async fn fetch_jwks(url: &str) -> anyhow::Result<String> {
 }
 
 fn scopes_of(p: &Principal) -> &[String] {
-    match p {
-        Principal::User { scopes, .. } => scopes,
-        Principal::App { scopes, .. } => scopes,
-    }
+    p.scopes()
 }
 
 /// header から principal を解決。 TS `requireAuth` と同ロジック + product-token 対応。

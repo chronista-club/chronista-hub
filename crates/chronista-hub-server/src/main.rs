@@ -51,23 +51,26 @@ async fn main() -> anyhow::Result<()> {
     let product_tokens = ProductTokenStore::new(db.clone());
     let consumer = spawn_consumer(event_log.clone(), storage.clone(), 1000);
 
-    // Unison (QUIC) surface — world registry/discovery channel。 axum と同一 tokio runtime。
-    // handle を drop すると shutdown するので、 プロセス生存期間 hold する (`_unison`)。
-    let _unison = chronista_hub_server::unison_server::spawn_unison(
-        &cfg.unison_addr,
-        cfg.unison_cert.clone(),
-        cfg.unison_cert_out.clone(),
-        storage.clone(),
-    )
-    .await
-    .context("spawn Unison surface")?;
-
     let (verifier, jwks_verifier) = build_verifier(&cfg.auth).await?;
 
     // JWKS background refresh (ADR-010: 5 分 cache 相当)。 失敗時は旧 keys を維持。
     if let Some(jwks) = jwks_verifier {
         spawn_jwks_refresh(jwks, cfg.auth.jwks_url.clone(), cfg.auth.jwks_refresh_secs);
     }
+
+    // Unison (QUIC) surface — world registry/discovery channel。 axum と同一 tokio runtime。
+    // federation auth (ADR-020 §S3) は verifier を policy 注入する (mechanism = club-unison
+    // の unison.auth channel)。 handle を drop すると shutdown するので生存期間 hold (`_unison`)。
+    let _unison = chronista_hub_server::unison_server::spawn_unison(
+        &cfg.unison_addr,
+        cfg.unison_cert.clone(),
+        cfg.unison_cert_out.clone(),
+        verifier.clone(),
+        cfg.federation_auth_required,
+        storage.clone(),
+    )
+    .await
+    .context("spawn Unison surface")?;
 
     if cfg.auth.admin_key.is_some() {
         tracing::info!("admin API enabled (token issue/rotate/revoke)");

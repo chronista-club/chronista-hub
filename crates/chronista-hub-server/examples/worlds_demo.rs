@@ -16,9 +16,19 @@ use serde_json::{Value, json};
 use unison::ProtocolClient;
 use unison::network::channel::UnisonChannel;
 
-async fn register(addr: &str, handle: &str, name: &str) -> Result<Value> {
+/// hub に接続する。 `cred` があれば connect_with_credential で federation auth を通す
+/// (ADR-020 §S3)。 None なら素の connect (permissive hub のみ受理)。
+async fn connect(client: &ProtocolClient, addr: &str, cred: Option<&[u8]>) -> Result<()> {
+    match cred {
+        Some(c) => client.connect_with_credential(addr, c).await?,
+        None => client.connect(addr).await?,
+    }
+    Ok(())
+}
+
+async fn register(addr: &str, handle: &str, name: &str, cred: Option<&[u8]>) -> Result<Value> {
     let client = ProtocolClient::new_default()?;
-    client.connect(addr).await?;
+    connect(&client, addr, cred).await?;
     let ch: UnisonChannel = client.open_channel("worlds").await?;
     let resp: Value = ch
         .request("Register", &json!({ "handle": handle, "name": name }))
@@ -28,9 +38,9 @@ async fn register(addr: &str, handle: &str, name: &str) -> Result<Value> {
     Ok(resp)
 }
 
-async fn discover(addr: &str) -> Result<Vec<Value>> {
+async fn discover(addr: &str, cred: Option<&[u8]>) -> Result<Vec<Value>> {
     let client = ProtocolClient::new_default()?;
-    client.connect(addr).await?;
+    connect(&client, addr, cred).await?;
     let ch: UnisonChannel = client.open_channel("worlds").await?;
     let resp: Value = ch.request("Discover", &json!({})).await?;
     ch.close().await?;
@@ -49,16 +59,19 @@ async fn main() -> Result<()> {
         .expect("install ring CryptoProvider");
 
     let addr = std::env::var("HUB_UNISON_ADDR").unwrap_or_else(|_| "[::1]:7879".into());
-    println!("hub Unison surface: {addr}\n");
+    // HUB_CRED があれば federation auth credential (Creo ID JWT 等) として提示 (ADR-020 §S3)。
+    let cred = std::env::var("HUB_CRED").ok().filter(|s| !s.is_empty());
+    let cred = cred.as_deref().map(str::as_bytes);
+    println!("hub Unison surface: {addr} (auth: {})\n", if cred.is_some() { "credential" } else { "none" });
 
     // 1) 2 world をそれぞれ別 client で register
-    let a = register(&addr, "world-a", "World A").await?;
+    let a = register(&addr, "world-a", "World A", cred).await?;
     println!("✓ world-a registered: {a}");
-    let b = register(&addr, "world-b", "World B").await?;
+    let b = register(&addr, "world-b", "World B", cred).await?;
     println!("✓ world-b registered: {b}");
 
     // 2) world-b 視点で discover → 両方見えるはず (相互 discovery)
-    let worlds = discover(&addr).await?;
+    let worlds = discover(&addr, cred).await?;
     let handles: Vec<&str> = worlds
         .iter()
         .filter_map(|w| w.get("handle").and_then(|v| v.as_str()))

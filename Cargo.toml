@@ -33,5 +33,6 @@ subtle = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # 次世代通信基盤 (QUIC + KDL discovery)。 package = club-unison、 lib identifier = `unison`。
 # world↔hub discovery を Unison channel で行う (crates.io 公開、 ADR-018)。
-# 1.2.0: spawn_listen_with_cert (federation cert gap)、 1.3.0: raw QUIC ALPN "unison"。
-club-unison = "1.3.0"
+# 1.2.0: spawn_listen_with_cert (federation cert gap)、 1.3.0: raw QUIC ALPN "unison"、
+# 1.4.0: connection-level auth primitive (enable_auth、 ADR-020 §S3)。
+club-unison = "1.4.0"

@@ -14,6 +14,8 @@
 //! (main.rs で `rustls::crypto::ring::default_provider().install_default()`)。
 //! quinn と surrealdb/reqwest で provider feature が両立し auto-detect が panic するため。
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
@@ -22,6 +24,7 @@ use unison::network::cert::CertSource;
 use unison::network::channel::UnisonChannel;
 use unison::network::{MessageType, ProtocolServer};
 
+use crate::auth::Verifier;
 use crate::config::UnisonCert;
 use crate::storage::Storage;
 
@@ -34,14 +37,34 @@ pub async fn spawn_unison(
     addr: &str,
     cert: UnisonCert,
     cert_out: Option<String>,
+    verifier: Arc<dyn Verifier>,
+    auth_required: bool,
     storage: Storage,
 ) -> Result<ServerHandle> {
     let server =
         ProtocolServer::with_identity("chronista-hub", crate::VERSION, "club.chronista.hub");
     server.enable_discovery(HUB_PROTOCOL_KDL).await?;
 
+    // connection-level auth (ADR-020 §S3): credential = Creo ID JWT (bytes) を
+    // verify_user_token で検証 → principal を connection に立てる。 policy 注入のみで、
+    // mechanism (unison.auth channel) は club-unison。 enable_auth は opt-in/非破壊。
+    {
+        let verifier = verifier.clone();
+        server
+            .enable_auth(move |cred: Vec<u8>| {
+                let verifier = verifier.clone();
+                async move {
+                    let jwt = String::from_utf8(cred).ok()?;
+                    let hub_principal = verifier.verify_user_token(&jwt)?;
+                    let principal: unison::network::Principal = Arc::new(hub_principal);
+                    Some(principal)
+                }
+            })
+            .await;
+    }
+
     server
-        .register_channel("worlds", move |_ctx, stream| {
+        .register_channel("worlds", move |ctx, stream| {
             // register_channel は Fn (接続毎に呼ばれる) なので、 storage は毎回 clone する。
             let storage = storage.clone();
             async move {
@@ -50,9 +73,17 @@ pub async fn spawn_unison(
                     match channel.recv().await {
                         Ok(msg) if msg.msg_type == MessageType::Request => {
                             let payload = msg.payload_as_value().unwrap_or_default();
-                            let reply = handle_worlds(&storage, &msg.method, payload)
-                                .await
-                                .unwrap_or_else(|e| json!({ "error": e.to_string() }));
+                            // principal は unison.auth で connection に立つ (未認証なら None)。
+                            let principal = ctx.principal().await;
+                            let reply = handle_worlds(
+                                &storage,
+                                principal.as_ref(),
+                                auth_required,
+                                &msg.method,
+                                payload,
+                            )
+                            .await
+                            .unwrap_or_else(|e| json!({ "error": e.to_string() }));
                             if channel
                                 .send_response(msg.id, &msg.method, &reply)
                                 .await
@@ -122,10 +153,17 @@ fn build_cert_source(cert: UnisonCert, cert_out: Option<&str>) -> Result<CertSou
     }
 }
 
-/// `worlds` channel の method dispatch。
-async fn handle_worlds(storage: &Storage, method: &str, payload: Value) -> Result<Value> {
+/// `worlds` channel の method dispatch。 federation scope を arm ごとに検証する (ADR-020 §S3)。
+async fn handle_worlds(
+    storage: &Storage,
+    principal: Option<&unison::network::Principal>,
+    auth_required: bool,
+    method: &str,
+    payload: Value,
+) -> Result<Value> {
     match method {
         "Register" => {
+            authorize_federation(principal, "federation.register", auth_required)?;
             let handle = payload
                 .get("handle")
                 .and_then(|v| v.as_str())
@@ -139,6 +177,7 @@ async fn handle_worlds(storage: &Storage, method: &str, payload: Value) -> Resul
             Ok(json!({ "handle": handle, "registered_at": registered_at }))
         }
         "Discover" => {
+            authorize_federation(principal, "federation.read", auth_required)?;
             let worlds = storage.list_resources_by_type("vp-world").await?;
             let list: Vec<Value> = worlds
                 .iter()
@@ -155,5 +194,36 @@ async fn handle_worlds(storage: &Storage, method: &str, payload: Value) -> Resul
         other => Err(anyhow::anyhow!(
             "unknown method '{other}' on channel 'worlds'"
         )),
+    }
+}
+
+/// federation scope を検証する (ADR-020 §S3 / ADR-006 `federation.*` scope)。
+///
+/// - principal 有 → hub [`crate::auth::Principal`] に downcast して scope を確認。
+/// - principal 無 → `auth_required` なら拒否、 permissive なら警告して通す
+///   (credential 未提示の現 client を壊さず段階移行する)。
+fn authorize_federation(
+    principal: Option<&unison::network::Principal>,
+    required_scope: &str,
+    auth_required: bool,
+) -> Result<()> {
+    match principal {
+        Some(p) => match p.downcast_ref::<crate::auth::Principal>() {
+            Some(hp) if hp.scopes().iter().any(|s| s == required_scope) => Ok(()),
+            Some(_) => Err(anyhow::anyhow!(
+                "insufficient scope: '{required_scope}' required"
+            )),
+            None => Err(anyhow::anyhow!("unrecognized principal")),
+        },
+        None if auth_required => Err(anyhow::anyhow!(
+            "authentication required (scope '{required_scope}')"
+        )),
+        None => {
+            tracing::warn!(
+                scope = required_scope,
+                "federation request without auth (permissive mode)"
+            );
+            Ok(())
+        }
     }
 }
