@@ -185,23 +185,38 @@ impl Storage {
         Ok(())
     }
 
-    /// world registry: `vp-world` resource を upsert (createdAt/updatedAt は DB 側
-    /// `time::now()` を string cast、 既存 REST 行の string 形式に揃える)。 registered_at を返す。
+    /// world registry: `vp-world` resource を upsert。 record id は **wld_id keyed**
+    /// (location 独立 routing key、 ADR-020 §S2/D2 — handle 改名・衝突で番地が壊れない)。
+    /// wld_id 無し (旧 client) は handle に fallback。 handle は display 属性、 endpoints は
+    /// direct 到達候補 (`["[GUA]:port"]`) として payload 保持 (hub は opaque に扱う)。
+    /// createdAt/updatedAt は DB 側 `time::now()` を string cast。 registered_at を返す。
     /// Unison `worlds.Register` の backing。 tree read (`/v1/tree/@handle`) にも即現れる。
-    pub async fn register_world(&self, handle: &str, name: &str) -> anyhow::Result<String> {
-        let rid = format!("vp-world:{handle}");
+    pub async fn register_world(
+        &self,
+        wld_id: Option<&str>,
+        handle: &str,
+        name: &str,
+        endpoints: &[String],
+    ) -> anyhow::Result<String> {
+        let rid = match wld_id {
+            Some(w) => format!("vp-world:{w}"),
+            None => format!("vp-world:{handle}"),
+        };
         let rows: Vec<Value> = self
             .db
             .query(
                 "UPSERT type::record('hub_resource', $rid) CONTENT {
                     rid: $rid, type: 'vp-world', path: '/', handle: $handle,
-                    visibility: 'public', payload: { name: $name },
+                    visibility: 'public',
+                    payload: { name: $name, wld_id: $wld_id, endpoints: $endpoints },
                     createdAt: <string> time::now(), updatedAt: <string> time::now()
                 };",
             )
             .bind(("rid", rid))
             .bind(("handle", handle.to_string()))
             .bind(("name", name.to_string()))
+            .bind(("wld_id", wld_id.map(str::to_string)))
+            .bind(("endpoints", endpoints.to_vec()))
             .await?
             .take(0)?;
         let registered_at = rows
