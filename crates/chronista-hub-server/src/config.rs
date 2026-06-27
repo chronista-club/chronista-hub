@@ -16,6 +16,10 @@ pub struct Config {
     /// self-signed mode で生成 cert DER を書き出すパス (非 loopback client が
     /// `TrustAnchors::Custom` に pin する用)。 None なら書き出さない。
     pub unison_cert_out: Option<String>,
+    /// federation discovery (worlds channel) の auth 強制 (ADR-020 §S3)。
+    /// `CHRONISTA_HUB_FEDERATION_AUTH=required` で true。 default false = permissive
+    /// (credential 提示なしも許容、 提示時のみ scope 検証 → 現 client を壊さず段階移行)。
+    pub federation_auth_required: bool,
     pub auth: AuthConfig,
 }
 
@@ -94,6 +98,8 @@ impl Config {
         let unison_cert_out = std::env::var("CHRONISTA_HUB_CERT_OUT")
             .ok()
             .filter(|s| !s.is_empty());
+        let federation_auth_required =
+            std::env::var("CHRONISTA_HUB_FEDERATION_AUTH").as_deref() == Ok("required");
 
         Config {
             port: std::env::var("CHRONISTA_HUB_PORT")
@@ -111,6 +117,7 @@ impl Config {
                 .unwrap_or_else(|_| "[::1]:7879".into()),
             unison_cert,
             unison_cert_out,
+            federation_auth_required,
             auth: AuthConfig {
                 issuer,
                 jwks_url,
