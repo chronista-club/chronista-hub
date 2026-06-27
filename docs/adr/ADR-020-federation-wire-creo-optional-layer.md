@@ -30,7 +30,8 @@ VP の agent 委譲（delegate/respond/complete + nostos 三相 Outcome + World 
 ### D1. hub = optional discovery/relay 層（**純 stateless**、 authority 不持）
 
 - spine §8「Creo を discovery/relay の optional 層」を hub の正準定義とする。**remote world は projection、 authority は home World**（「1場1authority」の World スケール相似）。
-- **hub は durable も buffer も持たない（純 stateless）**。hub の state は **ユーザ/agent 数に関係なく O(1)**（100k でも 1M でも hub は何も積まない）。これが「破綻しないスケール」の構造的保証。
+- **hub は per-pair / per-message / per-delegation state を持たない**。hub が積む durable state は **discovery registry の O(worlds)（machine 数で bound、 `wld_id→endpoint`）のみ**で、 ユーザ/agent/メッセージ数に対しては **O(0)**（100k user/agent でも積まない）。これが「破綻しないスケール」の構造的保証。
+- **hole-punch（NAT 穴あけ rendezvous）は採らない**〔VP 2026-06-27 refinement〕: hole-punch は hub に **per-pair coordination state**（candidate 交換 + simultaneous-open timing）を持たせる**唯一の機構**＝ D1 を破る。NAT は relay で解く（D3-b、 stateless in-flight）。hole-punch は冗長・可逆（将来 bandwidth 都合で要れば足せる）。
 - store-and-forward は hub でなく **home-World daemon（常時 substrate / TheWorld 不死）の reconcile** が担う（既存 #596 が現にやっている）。agent session が cold でも World daemon は生きているので、 target offline 時は **送り手 World daemon が delivered=true まで再送**する。hub が預かる必要がない。
 - **opt-in + degrade**: VP は `CHRONISTA_HUB_ADDR` 未設定で全 skip（machine-local）、 hub down でも machine-local 継続（VP hub_client と一致）。hub は「居れば速い・居なくても困らない」層。
 - topology = trusted peer mesh（手動 peering）+ hub = optional。
@@ -42,6 +43,7 @@ VP の agent 委譲（delegate/respond/complete + nostos 三相 Outcome + World 
 - **home-World identity = location 独立の stable-id `wld_xxx`**（EntId 風、 不変）。VP の I1「id ⟂ location」の literal 延長（namespace を git/path から、 LaneId を path/location から切ったのと**同じ手を World に一段上げる**）。canonical 番地 = `agent@lane@namespace@wld_xxx`、 **machine を含まない**。
 - **handle = display（人間可読）/ wld_id = routing key**（ADR-002/008 idiom を World に踏襲）。handle↔wld_id は ADR-002 の rename/reclaim policy を再利用。
 - **machine は identity でなく「今の居場所」**: hub registry = `wld_xxx → reachable endpoint(s)`（可変、 庭師 reconcile で heal）。`studio-pc:` は「wld_xxx が今 studio-pc に居る」の*解決済み view*であって canonical でない。→ World 移動・hostname 改名・衝突に番地が壊れない。
+- **registry endpoint field**〔VP 2026-06-27〕: `Register` が endpoint を carry、 `Discover` が `wld_id → endpoint(s)` を返す（protocol 0.2.0、 additive）。この field が **discovery→direct data-path を成立**させる（hole-punch 不要）。registry は O(worlds) の stateless な discovery state（D1）。
 - **physical 意味（physical control fleet「lane を楽器に」）は World/lane の attribute** として表す（「この World は MIDI 機材付き機械に bind」）。identity でなく property なので移動に強く、 意味も保つ。
 - hub が解決するのは **wld_id → endpoint** だけ。それ以下（`agent@lane`）は target home-World が local 解決（VP の「World→SP reverse-wake 不要」発見と一致）。
 - 現状の flat handle（`vp-world:{handle}`、 `storage.rs:192`、 handle=OS hostname）を **wld_id=routing key / handle=display** の形へ寄せ直す。
@@ -49,15 +51,18 @@ VP の agent 委譲（delegate/respond/complete + nostos 三相 Outcome + World 
 
 ### D3. 連邦 wire 一本 = 到達性の degrade ladder（direct → relay → store-and-forward）
 
-rendezvous/relay/buffer は**別 feature でなく、同じ一本の wire の到達手段が degrade するだけ**。しかも degrade ladder は **全段 hub stateless**（D1）:
+**data-path = discovery → direct（確定）**〔VP 2026-06-27〕。到達手段が degrade するだけで、 別 feature ではない。degrade ladder は **全段 hub stateless**（D1）:
 
 | 到達性 | hub の役割 | hub state |
 |---|---|---|
-| (a) **direct** — reachable | endpoint を渡すだけ（rendezvous）。data は world↔world direct QUIC | stateless |
-| (b) **relay** — NAT / direct 不可、 target は online | in-flight live relay（packet 転送、 貯めない） | stateless |
-| (c) **target offline** | **hub は何もしない** → 送り手 home-World daemon が reconcile で再送（D1） | stateless / 貯蔵は home-World |
+| (a) **同 LAN/tailnet（既定）** | `Discover` で endpoint を返すだけ。data は world↔world **direct** QUIC、 **hub は data 不在** | discovery registry O(worlds) のみ |
+| (b) **off-tailnet NAT 他人** | **relay = NAT 正準解**。in-flight live relay（packet 転送、 貯めない）。**hole-punch は採らない** | per-connection 一時のみ（durable 0） |
+| (c) **target offline** | **hub は何もしない** → 送り手 home-World daemon が reconcile で再送 | 0 / 貯蔵は home-World |
 
-同じ「場への tell/ask」が、 到達できなければ degrade するだけ。canonical durable store は常に各 home-World の SurrealDB（delegation #595「World 中央 store へ canonical 直行」と同型）。hub は (a) endpoint 解決 + (b) live relay の二役だけで、 どちらも state を積まない。
+- **同 tailnet は常に direct**（trusted peer mesh の既定）。relay が要るのは **off-tailnet の他人だけ**＝レア。
+- **hole-punch 不採用**（per-pair coordination state を避ける = D1、 D3-b relay で代替。冗長・可逆）。
+- relay 実装は **最初の off-tailnet NAT peer 出現時に着手で可**（YAGNI、 それまで direct で足りる）。
+- canonical durable store は常に各 home-World の SurrealDB（delegation #595「World 中央 store へ canonical 直行」と同型）。hub は (a) endpoint 解決 + (b) live relay の二役だけで、 どちらも durable state を積まない。
 
 ### D4. transport = unison channel（REST は過渡期）
 
@@ -86,6 +91,7 @@ rendezvous/relay/buffer は**別 feature でなく、同じ一本の wire の到
 - ✅ **緊張点1（連邦 wire の store 配置）— 2026-06-27 確定**: hub = 純 stateless（durable も buffer も持たない、 O(1) state）。store-and-forward = home-World daemon reconcile。delegation authority = 各 home-World が自分の側（option 2、 projection モデル、 片方向 tell 交換）。→ D1 / D3 / D5 に反映済。
 - ✅ **緊張点2（addressing — handle = machine か world か）— 2026-06-27 確定**: location 独立（option A）。home-World stable-id `wld_xxx`（id⟂location、 I1 literal 延長）= routing key、 handle = display（ADR-002/008 idiom）、 machine = 今の居場所（hub が `wld_id→endpoint` 解決）、 physical 意味 = World/lane の attribute。→ D2 に反映済。
 - ✅ **緊張点3（club-nostos を hub に入れる位置）— 2026-06-27 確定**: hub payload-opaque（club-nostos 非依存）。Outcome 型は home-World 間契約、 hub は address で routing するだけ。観測は envelope の opaque metadata（kind/phase タグ）で payload 非依存。→ D5 に反映済。
+- ✅ **transport ladder refinement（VP 2026-06-27）**: ① **hole-punch rendezvous を ladder から削除**（hub に per-pair coordination state を持たせる唯一の機構 = D1 を破る）。② **relay を NAT 正準解に昇格**（既に D3-b、 hole-punch は冗長・pro-100k・可逆）。③ **data-path = discovery→direct 確定**（同 LAN/tailnet は World 直結 = hub data 不在、 relay は off-tailnet NAT 他人のみ）。④ registry に `wld_id→endpoint` field（D2）。⑤ relay は最初の off-tailnet NAT peer 時着手で可。VP は D1-D5 背骨に全面同意、 本件は ladder のみの refinement。→ D1/D2/D3/ladder に反映済。
 
 ## Open points（残り — 設計詳細、 doctrine で方向は決定済）
 
@@ -95,11 +101,10 @@ rendezvous/relay/buffer は**別 feature でなく、同じ一本の wire の到
 
 - **土台（済）**: club-unison 1.1.0 → 1.3.0 bump（cert API + ALPN）。build/test 22 green/clippy clean。
 - **S1 cert（済 2026-06-27）**: `spawn_unison` を `spawn_listen_with_cert` に切替、 `CHRONISTA_HUB_CERT_MODE`（dev / self-signed / file）で cert source 選択。dev default で loopback 無回帰（worlds_demo 相互 discovery 実機 PASS）。self-signed は cert DER を `CHRONISTA_HUB_CERT_OUT` に export → client は **`TrustAnchors::Custom` に cert DER を pin**（hash でなく cert そのもの — club-unison の trust model）。direct wire（D3-a）+ 非 loopback federation の前提が揃った。
-- **S2 rendezvous**: `worlds` channel に `endpoints` 追加（場→host→endpoint）。protocol 0.1.0 → 0.2.0、 両側 codegen 同期。direct QUIC（D3-a）成立。
+- **S2 registry endpoint field**: `worlds` channel に `endpoint(s)` を additive 追加（Register が carry / Discover が `wld_id→endpoint` 返す）。protocol 0.1.0 → 0.2.0、 両側 codegen 同期。これで **同 LAN/tailnet の direct data-path（D3-a）成立**。VP の `wld_id` 発行設計と同期して着手。
 - **S3 discovery auth**: ADR-006 に `federation.register`/`federation.read` 追加、 worlds channel を Creo ID token で認証（D1 の identity 境界）。
-- **S4 relay**: address-routed relay（D3-b）。
-- **S5 store-and-forward**: transient buffer（D3-c）。
-- **S6 nostos payload**: 三相 Outcome を wire に載せる（D5）。
+- **relay（deferred）**: off-tailnet NAT 他人が初めて現れた時に着手（D3-b、 NAT 正準解、 in-flight stateless）。それまで同 tailnet direct で足りる（YAGNI）。**hole-punch は採らない**（D1）。
+- **wire envelope + opaque payload**: 連邦 wire の envelope（宛先 + opaque payload + 観測 metadata）。payload は home-World 間契約（hub opaque、 D5）。S&F は home-World daemon（hub でなく）。
 - **終着**: federation surface 全 unison channel 化（D4、 REST は漸進撤去）。
 
 > ⚠️ cross-repo: 1.3.0 で raw QUIC ALPN `"unison"` が必須化。hub は server 側で ALPN を出すため、 **VP hub_client も 1.3.0 追従が実機 federation の前提**（両端で同 label を negotiate）。
