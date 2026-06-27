@@ -94,7 +94,7 @@ rendezvous/relay/buffer は**別 feature でなく、同じ一本の wire の到
 ## 実装 ladder（段階的・急がない／「天井は高く、 実装は最小」）
 
 - **土台（済）**: club-unison 1.1.0 → 1.3.0 bump（cert API + ALPN）。build/test 22 green/clippy clean。
-- **S1 cert**: `spawn_unison` を `spawn_listen` → `spawn_listen_with_cert`（`CertSource::SelfSigned`/`Provided`）。client 両側 TrustAnchors/hash-pin。direct wire（D3-a）の前提。
+- **S1 cert（済 2026-06-27）**: `spawn_unison` を `spawn_listen_with_cert` に切替、 `CHRONISTA_HUB_CERT_MODE`（dev / self-signed / file）で cert source 選択。dev default で loopback 無回帰（worlds_demo 相互 discovery 実機 PASS）。self-signed は cert DER を `CHRONISTA_HUB_CERT_OUT` に export → client は **`TrustAnchors::Custom` に cert DER を pin**（hash でなく cert そのもの — club-unison の trust model）。direct wire（D3-a）+ 非 loopback federation の前提が揃った。
 - **S2 rendezvous**: `worlds` channel に `endpoints` 追加（場→host→endpoint）。protocol 0.1.0 → 0.2.0、 両側 codegen 同期。direct QUIC（D3-a）成立。
 - **S3 discovery auth**: ADR-006 に `federation.register`/`federation.read` 追加、 worlds channel を Creo ID token で認証（D1 の identity 境界）。
 - **S4 relay**: address-routed relay（D3-b）。
