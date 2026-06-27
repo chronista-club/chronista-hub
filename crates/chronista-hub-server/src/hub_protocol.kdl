@@ -5,7 +5,11 @@
 // MVP scope: 単一 hub 内で 2 つの VP world が相互に discovery する (ADR pending、
 // federation = multi-hub は ~6-12mo)。`unison.discovery` は enable_discovery が配信する
 // self-description channel (server 自身の protocol.kdl + hash)。
-protocol "chronista-hub" version="0.1.0" {
+// v0.2.0 (ADR-020 §S2): worlds.Register に wld_id (location 独立 routing key) と
+// endpoints (direct 到達候補、 string 配列 "[GUA]:port") を additive 追加。
+// hub は wld_id keyed で index し Discover で wld_id+endpoints を返す。 endpoints は
+// opaque な順序付き候補リスト (dialer=VP が解釈、 relay は混ぜない別レイヤー)。
+protocol "chronista-hub" version="0.2.0" {
     namespace "club.chronista.hub"
 
     // self-description — server が自分の KDL を hash 付きで返す (club-unison 組込)。
@@ -26,13 +30,20 @@ protocol "chronista-hub" version="0.1.0" {
         request "Register" description="Register a VP world into the hub registry so other worlds can discover it." {
             field "handle" type="string" required=#true
             field "name" type="string"
+            // wld_id = location 独立 routing key (creo EntId base58、 `wld_` prefix)。 canonical。
+            field "wld_id" type="string"
+            // endpoints = direct 到達候補 (string 配列 "[GUA]:port")。 順序付き、 空=direct 候補なし。
+            field "endpoints" type="json"
             returns "Registered" {
+                field "wld_id" type="string"
                 field "handle" type="string" required=#true
                 field "registered_at" type="string" required=#true
+                field "endpoints" type="json"
             }
         }
 
         request "Discover" description="List VP worlds registered in this hub, for mutual discovery." {
+            // worlds[] = { wld_id, handle, name, endpoints[], registered_at } (per-entry freeform json)。
             returns "WorldList" {
                 field "worlds" type="json" required=#true
             }
