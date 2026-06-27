@@ -19,11 +19,13 @@
 #   - 12880:3000/tcp  REST → Caddy が hub.chronista.club を HTTPS 終端し reverse_proxy
 #   - 12879:7879/udp  Unison(QUIC) → 直 expose。 federation addr = hub.chronista.club:12879
 #
-# ⚠️ LIVE 前提の未充足 (code gap、 deploy 前に要対応。 DEPLOY.md「live」参照):
-#   1. Unison cert: 現状 dev self-signed (SkipVerification)。 live は proper cert /
-#      TrustAnchors が要る (hub code に CertSource 設定が未実装、 ADR-018 の負債)。
-#   2. /@handle public route: hub は現状 /v1/tree/{handle} のみ。 canonical /@handle 未実装。
-#   3. portal: apex chronista.club の landing service 未作成。
+# LIVE 前提 (DEPLOY.md「live」参照):
+#   1. ✅ Unison cert: ADR-020 §S1 で CertSource 配線済 (.env.live の CHRONISTA_HUB_CERT_MODE
+#      = self-signed、 SAN=hub.chronista.club、 cert DER を CERT_OUT に export → VP が
+#      TrustAnchors::Custom に pin)。 federation の direct path = IPv6 GUA (ADR-020 D3)。
+#      残るは op 設定 (AAAA レコード + IPv6 UDP firewall、 DEPLOY.md Step 0)。
+#   2. /@handle public route: hub は現状 /v1/tree/{handle} のみ (federation と独立した別トラック)。
+#   3. portal: apex landing は pure Caddy (別 service 不要)。
 
 [Unit]
 Description=Chronista Hub server (live) — World Tree meta-registry (REST + Unison/QUIC)

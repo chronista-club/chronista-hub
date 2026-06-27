@@ -114,28 +114,57 @@ live は subdomain prefix 省略。config skeleton は揃っているが、**dep
 - ports（scratch と非衝突）: REST `12880:3000/tcp` / Unison `12879:7879/udp`
 - federation addr: **`hub.chronista.club:12879`**
 
-### live の残課題（federation と public-web で切り分け）
+### live federation の状態（cert gap 解消、 IPv6 GUA が principal）
 
-> **portal = pure Caddy（app 実装を入れない方針）**: apex `chronista.club` は Caddy の
-> `reverse_proxy`（`/@handle` → hub）+ 静的 landing のみ。app 側ロジックは一切持たず、
-> すべて hub service 側に置く（`/@handle` の中身も hub が出す）。→ 「portal service」は不要。
+> **portal = pure Caddy**: apex `chronista.club` は `reverse_proxy`（`/@handle` → hub）+ 静的 landing のみ。app ロジックは hub service 側。「portal service」不要。
 
-| 用途 | 残 code gap |
+| 用途 | 状態 |
 |---|---|
-| **live federation**（VP ↔ hub）| **#1 Unison cert のみ** — dev self-signed（SkipVerification）→ proper cert / TrustAnchors。hub に `CertSource` 未実装（ADR-018 の負債）。auth/port/deploy は config 済 |
-| **live public-web**（`chronista.club/@handle` brand URL）| **#2 hub の `/@handle` public route** — 現状 `/v1/tree/{handle}` のみ。canonical = `hub.chronista.club/@handle`、apex は Caddy alias proxy（config 済）、landing も Caddy（`file_server`）|
+| **live federation**（VP ↔ hub）| ✅ **cert gap 解消**（ADR-020 §S1 で CertSource 配線、`.env.live` の `CHRONISTA_HUB_CERT_MODE`）。register/discover/auth/wld_id/endpoints（S2/S3）も code 済。残るは **op 設定（IPv6 GUA + cert 配布、Step 0/1）** のみ |
+| **live public-web**（`chronista.club/@handle`）| #2 hub の `/@handle` public route が未（federation とは独立した別トラック）|
 
-→ live **federation** を回すだけなら gap は **#1（cert）のみ**。public-web（handle ページ）は
-**#2（hub app 側）**が要るが、federation とは独立した別トラック。
+→ live **federation** を回すのに残るのは **op 設定（IPv6 GUA 到達性 + cert 配布）** のみ。
 
-### 手順（上記 3 件が解決した後）
-scratch の手順と同型。差分のみ:
-- `.env.live.server` は **`op inject` 必須**（`HUB_ADMIN_KEY` + 実 auth）。stub にしない。
-- DNS: `hub.chronista.club` + `chronista.club`（apex portal）の A record → fleet-worker-01。
-- firewall: TCP 80/443 + **UDP 12879**。
-- Caddy: `Caddyfile.live`（2 ホスト分）を取り込み。
-- 検証: `curl https://hub.chronista.club/health` / VP daemon に `CHRONISTA_HUB_ADDR=hub.chronista.club:12879`。
+### 接続の principal = IPv6 GUA（ADR-020 D3 / council 2026-06-28）
+tailnet 依存は外した。federation の direct data-path は **IPv6 GUA**（overlay 不要、cross-internet 直結、障壁は firewall のみ）。VP は hub を **hostname `hub.chronista.club`（AAAA → GUA）で dial** → cert SAN は安定 DNS 名で済む（動的 GUA を IP-SAN に焼かない）。direct 全滅時は hub relay（S4、未実装）。
+
+### Step 0. IPv6 GUA 到達性（最優先 — ここが principal）
+```bash
+# (a) fleet-worker-01 が安定 IPv6 GUA を持つか
+ip -6 addr show scope global | grep inet6          # 2000::/3 の GUA があること
+# (b) DNS: hub.chronista.club に AAAA(+A) を張る
+#     AAAA  hub.chronista.club → <fleet-worker-01 の GUA>   (Unison/federation の principal)
+#     A     hub.chronista.club → <fleet-worker-01 の IPv4>  (REST/Caddy 用)
+# (c) IPv6 firewall: Unison UDP を v6 で開放
+#     例(ufw): sudo ufw allow 12879/udp              # v4/v6 両方
+#     v6 確認: sudo ip6tables -L -n | grep 12879
+# (d) 到達 smoke (手元 → GUA へ UDP)
+nc -6 -uvz hub.chronista.club 12879 || echo "UDP/v6 到達不可 — DNS/firewall 見直し"
+```
+
+### Step 1. cert（self-signed quickstart）
+hub は起動時に self-signed cert（SAN=`hub.chronista.club`）を生成し DER を
+`~/chronista-hub/data/live/unison-cert.der` に export（`CHRONISTA_HUB_CERT_OUT`）。
+VP 側はこの DER を取得し `TrustAnchors::Custom` に pin（hostname dial なので SAN 検証も通る）。
+→ public scale（「誰でも繋がる」）に上げる時は `.env.live` を `CHRONISTA_HUB_CERT_MODE=file`
++ 実 CA cert にし、VP は System trust（cert 配布不要）。
+
+### Step 2-5. deploy（scratch と同型、 差分のみ）
+- `.env.live.server` は **`op inject` 必須**（`HUB_ADMIN_KEY` + 実 Creo ID JWKS auth）。stub にしない。
+- port 衝突確認（`12880/tcp`, `12879/udp`）。image pull。`mkdir -p ~/chronista-hub/data/live`。
+- Quadlet 配置 → `loginctl enable-linger` → `systemctl --user daemon-reload && start`。
+- Caddy: `Caddyfile.live`（hub.chronista.club + apex）取り込み → reload（REST の HTTPS/LE）。
+
+### 検証（federation 疎通）
+```bash
+curl -fsS https://hub.chronista.club/health                       # REST (Caddy/HTTPS)
+# VP daemon: hub を hostname で dial (AAAA → GUA) + cert DER を Custom pin
+#   CHRONISTA_HUB_ADDR=hub.chronista.club:12879
+# → 実 world が register(wld_id+endpoints)/discover、REST tree にも出る:
+curl -fsS https://hub.chronista.club/v1/tree/<world-handle>
+```
 
 ### 注意
-- live = 実データ・実 auth。scratch のように捨てられない。
-- cert が proper になるまで federation を公開しない（INSECURE 回避）。
+- live = 実データ・実 auth（Creo ID JWKS）。scratch のように捨てられない。
+- **federation auth** は当面 `permissive`（VP が `connect_with_credential` で Creo ID JWT を出すまで）。VP 追従後に `CHRONISTA_HUB_FEDERATION_AUTH=required` へ。
+- **full 疎通**（world A → world B の direct/relay dial）は **VP dialer + hub S4 relay** 待ち。本 deploy は register/discover/auth/cert を実ネットで先行検証する段（IPv6 GUA 到達 + cert path の実証）。
