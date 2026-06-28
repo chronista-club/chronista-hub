@@ -120,10 +120,10 @@ live は subdomain prefix 省略。config skeleton は揃っているが、**dep
 
 | 用途 | 状態 |
 |---|---|
-| **live federation**（VP ↔ hub）| ✅ **cert gap 解消**（ADR-020 §S1 で CertSource 配線、`.env.live` の `CHRONISTA_HUB_CERT_MODE`）。register/discover/auth/wld_id/endpoints（S2/S3）も code 済。残るは **op 設定（IPv6 GUA + cert 配布、Step 0/1）** のみ |
+| **live federation**（VP ↔ hub）| ✅ **cert gap 解消**（ADR-020 §S1 で CertSource 配線、`.env.live` の `CHRONISTA_HUB_CERT_MODE`）。register/discover/auth/wld_id/endpoints（S2/S3）も code 済。✅ **2026-06-28 公開越し疎通実証済**（self-signed + pin）。残るは **cert 永続化 = 実 CA cert 発行（DNS-01、Step 1）→ file mode 切替**（VP は System trust = pin 不要に） |
 | **live public-web**（`chronista.club/@handle`）| #2 hub の `/@handle` public route が未（federation とは独立した別トラック）|
 
-→ live **federation** を回すのに残るのは **op 設定（IPv6 GUA 到達性 + cert 配布）** のみ。
+→ live **federation** の安定運用に残るのは **op 設定（実 CA cert 発行 + file mode 切替、Step 1）** のみ。
 
 ### 接続の principal = IPv6 GUA（ADR-020 D3 / council 2026-06-28）
 tailnet 依存は外した。federation の direct data-path は **IPv6 GUA**（overlay 不要、cross-internet 直結）。**ただし IPv6 GUA principal は world↔world direct の話** — worlds が自身の GUA を advertise（S2 で hub が交換）し peer 同士が直結する。**hub の住所ではない**: hub は discovery/relay の合流点で、worlds が到達できれば IPv4 で足りる。direct 全滅時は hub relay（S4、未実装）。
@@ -155,12 +155,49 @@ ip -6 addr show scope global | grep inet6          # 2000::/3 の GUA がある�
 nc -6 -uvz hub.chronista.club 12879 || echo "UDP/v6 到達不可 — DNS/firewall 見直し"
 ```
 
-### Step 1. cert（self-signed quickstart）
-hub は起動時に self-signed cert（SAN=`hub.chronista.club`）を生成し DER を
-`~/chronista-hub/data/live/unison-cert.der` に export（`CHRONISTA_HUB_CERT_OUT`）。
-VP 側はこの DER を取得し `TrustAnchors::Custom` に pin（hostname dial なので SAN 検証も通る）。
-→ public scale（「誰でも繋がる」）に上げる時は `.env.live` を `CHRONISTA_HUB_CERT_MODE=file`
-+ 実 CA cert にし、VP は System trust（cert 配布不要）。
+### Step 1. cert（実 CA = Let's Encrypt、file mode）★決定 2026-06-28 mito
+
+**狙い**: hub は LE の実 CA cert を `CertSource::FromFile` で出し、client（VP / live_probe）は
+`TrustAnchors::System`（webpki-roots = Mozilla bundle、ISRG Root 含む）で検証する。
+→ **cert 配布も pin も不要。cert が回っても client 無変更**（self-signed の「restart で cert
+変化 → pin 済 client 弾かれる」ephemeral 脆さを構造的に根絶）。
+
+cert 取得は **DNS-01（Cloudflare）**。12879/udp の QUIC listener は Caddy の後ろではない（生 QUIC）
+ので HTTP-01 ではなく DNS-01 で取り、PEM を `CertSource::FromFile` に直接食わせる。DNS-01 は
+TXT レコードだけで完結し inbound port を一切使わない（QUIC listener を乱さない）。
+
+> ⚠️ **順序**: 先に cert を発行して `data/live` に置く → その後で `.env.live.server` を file mode に。
+> cert files 不在のまま file mode で起動すると `FromFile` が読めず起動失敗する。未発行の間は
+> `.env` の self-signed fallback（template のコメント行）で立てておく。
+
+```bash
+# 前提: A hub.chronista.club → 163.43.117.17 は設定済 (Step 0)。CF token = shared-cloudflare
+#       (@CreoMemories、Zone:DNS:Edit for chronista.club)。fleet-worker-01 = linuxbrew rootless。
+
+# 1. acme.sh 導入（linuxbrew user、rootless。daily 更新 cron も自動設置）— 初回のみ
+curl https://get.acme.sh | sh -s email=mito@chronista.club
+export PATH="$HOME/.acme.sh:$PATH"   # or: source ~/.bashrc
+
+# 2. CF token を env に（acme.sh が CF API で _acme-challenge TXT を立てる）
+export CF_Token="<shared-cloudflare token>"      # token 単体で zone auto-detect 可
+
+# 3. 発行（DNS-01、LE 本番）。RSA-2048 = 最も枯れた chain（R10/R11 → ISRG Root X1）
+acme.sh --issue --dns dns_cf -d hub.chronista.club --server letsencrypt
+#   ec-256 にするなら末尾に --keylength ec-256（chain は E1/E2 → ISRG Root X2、両方 bundle 在）
+
+# 4. install-cert: data/live に fullchain+key を deploy し、reloadcmd で hub restart
+#    ⚠️ cron は user-session env を持たない → systemctl --user 用に XDG_RUNTIME_DIR を明示注入
+acme.sh --install-cert -d hub.chronista.club \
+  --fullchain-file ~/chronista-hub/data/live/unison-cert.pem \
+  --key-file       ~/chronista-hub/data/live/unison-key.pem \
+  --reloadcmd "export XDG_RUNTIME_DIR=/run/user/\$(id -u); systemctl --user restart chronista-hub-live-server.service"
+#   --ecc を付ける（ec-256 で発行した場合のみ install 時も --ecc が要る）
+```
+
+更新（90日）は acme.sh の daily cron が残量 <30日で自動 renew → reloadcmd で hub restart →
+`FromFile` が新 cert を再読込（hub は起動時に cert を resolve するので restart で反映、hot-reload は不要）。
+linger=yes 前提（Step 2-5）。cron でなく systemd `--user` timer に寄せたい場合は
+`acme.sh --cron` を叩く `.timer`/`.service` を `~/.config/systemd/user/` に置く。
 
 ### Step 2-5. deploy（rootless、 tailscale SSH で実施可。 2026-06-28 実績）
 - `.env.live.server`: template から生成。`HUB_ADMIN_KEY` は op inject で入れる or **省略可**（未設定 = admin API 404 で無効、 federation には不要）。実 Creo ID JWKS auth（stub にしない）。
@@ -169,19 +206,30 @@ VP 側はこの DER を取得し `TrustAnchors::Custom` に pin（hostname dial 
 - **firewall（ufw、 sudo = root login 要）**: `sudo ufw allow 12879/udp`（Unison federation）。`80,443/tcp` は許可済（Caddy）、 `tailscale0` 全許可。**`12880/tcp` は開けない**（REST は Caddy or host loopback）。default deny(incoming) なので **12879/udp 未許可だと QUIC が沈黙**（TCP timeout / UDP の `nc -uz` は DROP でも誤 success に注意）。
 - Caddy（REST HTTPS / handle ページ、 federation には不要）: `Caddyfile.live` 取り込み → reload。
 
-### 検証（federation 疎通）★2026-06-28 公開越し実証済
+### 検証（federation 疎通）
+
+**実 CA cert（file mode）後 = System trust、pin なし**（本線）:
 ```bash
 # REST health（host loopback。 Caddy 公開後は https://hub.chronista.club/health）
 ssh linuxbrew@<host> 'curl -fsS http://localhost:12880/health'
-# hub の self-signed cert DER を取得（client が TrustAnchors::Custom に pin する材料）
-ssh linuxbrew@<host> 'cat ~/chronista-hub/data/live/unison-cert.der' > hub-cert.der
-# 公開越しに cert-pin で register/discover round-trip を確認
-#   (worlds_demo は SkipVerification=loopback 限定 → 非 loopback 公開 hub は live_probe を使う)
-HUB_CERT=hub-cert.der HUB_ADDR=hub.chronista.club:12879 \
+# cert が実 CA か確認（chain が LE / SAN=hub.chronista.club であること）
+echo | openssl s_client -connect hub.chronista.club:443 2>/dev/null | openssl x509 -noout -issuer -subject  # ※REST/Caddy 側
+# 公開越しに pin なしで register/discover round-trip（HUB_CERT を渡さない = TrustAnchors::System）
+HUB_ADDR=hub.chronista.club:12879 \
   cargo run -p chronista-hub-server --example live_probe
-#   → ✓ QUIC connect (cert pin) / ✓ Register / ✓ Discover
-# VP 実 world: daemon に CHRONISTA_HUB_ADDR=hub.chronista.club:12879 + 同 cert を Custom pin
+#   → ✓ QUIC connect (System trust) / ✓ Register / ✓ Discover
+# VP 実 world: daemon に CHRONISTA_HUB_ADDR=hub.chronista.club:12879 のみ（cert 配布も pin も不要）
 ```
+
+**self-signed fallback 期（cert 未発行）= Custom pin**:
+```bash
+ssh linuxbrew@<host> 'cat ~/chronista-hub/data/live/unison-cert.der' > hub-cert.der
+HUB_CERT=hub-cert.der HUB_ADDR=hub.chronista.club:12879 \
+  cargo run -p chronista-hub-server --example live_probe   # → ✓ (cert pin)
+```
+
+> 🧹 `live_probe` は `wld_liveprobe` を register する（live registry に残る無害なテスト entry）。
+> 疎通確認後に掃除する（registry の delete/expire path 整備時にまとめて）。
 
 ### 注意
 - live = 実データ・実 auth（Creo ID JWKS）。scratch のように捨てられない。
