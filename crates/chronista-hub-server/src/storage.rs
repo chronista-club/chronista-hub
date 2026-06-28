@@ -228,6 +228,30 @@ impl Storage {
         Ok(registered_at)
     }
 
+    /// world registry: `vp-world` resource を削除 (deregister)。 record id は
+    /// [`Self::register_world`] と同じく **wld_id keyed** (無ければ handle fallback) で
+    /// 構成する (鏡像)。 存在しない rid の DELETE は no-op = idempotent。 `RETURN BEFORE`
+    /// で削除前の行を受け、 **削除した entry 数** (0 or 1) を返す。 Unison `worlds.Unregister`
+    /// の backing (test entry 掃除 + registry lifecycle、 ADR-020 §S2)。
+    pub async fn unregister_world(
+        &self,
+        wld_id: Option<&str>,
+        handle: Option<&str>,
+    ) -> anyhow::Result<usize> {
+        let rid = match (wld_id, handle) {
+            (Some(w), _) => format!("vp-world:{w}"),
+            (None, Some(h)) => format!("vp-world:{h}"),
+            (None, None) => anyhow::bail!("wld_id or handle required for unregister"),
+        };
+        let removed: Vec<Value> = self
+            .db
+            .query("DELETE type::record('hub_resource', $rid) RETURN BEFORE")
+            .bind(("rid", rid))
+            .await?
+            .take(0)?;
+        Ok(removed.len())
+    }
+
     /// 全 handle 横断で type 指定の resource を列挙 (discovery 用)。
     /// `get_resources_by_handle` と違い handle scope を要求しない。
     pub async fn list_resources_by_type(&self, rtype: &str) -> anyhow::Result<Vec<Resource>> {
