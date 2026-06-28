@@ -11,7 +11,10 @@
 // opaque な順序付き候補リスト (dialer=VP が解釈、 relay は混ぜない別レイヤー)。
 // v0.3.0: worlds.Unregister を additive 追加 (registry lifecycle — 自身の登録を撤回。
 // wld_id keyed の DELETE、 idempotent)。 Register と同じ federation.register scope。
-protocol "chronista-hub" version="0.3.0" {
+// v0.4.0 (ADR-020 §S4): relay channel を additive 追加 (universal floor — direct 全滅時に
+// hub が source→target を中継)。 source が open で {to,from} を宣言 → hub が target の
+// server-initiated stream (club-unison 1.5.0) に forward。 片方向 (D5「片方向 tell」)、 opaque。
+protocol "chronista-hub" version="0.4.0" {
     namespace "club.chronista.hub"
 
     // self-description — server が自分の KDL を hash 付きで返す (club-unison 組込)。
@@ -60,6 +63,22 @@ protocol "chronista-hub" version="0.3.0" {
                 field "handle" type="string"
                 // removed = 削除した entry 数 (0=対象なし / 1=削除)。 idempotent。
                 field "removed" type="json" required=#true
+            }
+        }
+    }
+
+    // relay — universal floor (ADR-020 §S4)。 direct 全滅時に hub が source→target を中継。
+    // dialer が relay channel を開き open で宛先を宣言 → 以降の frame が target へ片方向 forward
+    // される (payload opaque、 hub は中身を覗かない = D5)。 target 側は server-initiated `relay`
+    // stream を register_server_channel("relay") で受信 (club-unison 1.5.0、 from="server")。
+    channel "relay" from="client" lifetime="persistent" {
+        request "open" description="Declare relay target (wld_id). Subsequent frames are forwarded one-way to {to}, opaque." {
+            field "to" type="string" required=#true     // 宛先 wld_id
+            field "from" type="string"                    // 送信元 wld_id (target へ伝える)
+            returns "Status" {
+                // established (target へ stream 確立) / offline (target 不在 = D3-c) / error。
+                field "status" type="string" required=#true
+                field "detail" type="string"
             }
         }
     }
