@@ -160,6 +160,52 @@ async fn storage_crud() {
 }
 
 #[tokio::test]
+async fn world_register_discover_unregister() {
+    let (storage, _log, _pt) = setup_mem().await;
+
+    // register: wld_id keyed (ADR-020 §S2)
+    let reg_at = storage
+        .register_world(
+            Some("wld_test1"),
+            "test-world",
+            "Test World",
+            &["[2400:4150::1]:32000".to_string()],
+        )
+        .await
+        .unwrap();
+    assert!(!reg_at.is_empty(), "registered_at should be set");
+
+    // discover: vp-world list に wld_id + endpoints 付きで現れる
+    let worlds = storage.list_resources_by_type("vp-world").await.unwrap();
+    assert_eq!(worlds.len(), 1);
+    assert_eq!(worlds[0].handle, "test-world");
+    assert_eq!(worlds[0].payload["wld_id"], "wld_test1");
+    assert_eq!(worlds[0].payload["endpoints"][0], "[2400:4150::1]:32000");
+
+    // unregister by wld_id → entry が消え、削除数 1 を返す
+    let removed = storage
+        .unregister_world(Some("wld_test1"), None)
+        .await
+        .unwrap();
+    assert_eq!(removed, 1, "one entry removed");
+    assert!(
+        storage
+            .list_resources_by_type("vp-world")
+            .await
+            .unwrap()
+            .is_empty(),
+        "registry empty after unregister"
+    );
+
+    // 冪等: 2 回目は削除対象なし = 0 (no-op、エラーにならない)
+    let removed2 = storage
+        .unregister_world(Some("wld_test1"), None)
+        .await
+        .unwrap();
+    assert_eq!(removed2, 0, "idempotent: nothing to remove");
+}
+
+#[tokio::test]
 async fn event_log_append_and_dedup() {
     let (_storage, log, _pt) = setup_mem().await;
     let res = sample_resource("atlas_1", "mito");

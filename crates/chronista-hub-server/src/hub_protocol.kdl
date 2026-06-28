@@ -9,7 +9,9 @@
 // endpoints (direct 到達候補、 string 配列 "[GUA]:port") を additive 追加。
 // hub は wld_id keyed で index し Discover で wld_id+endpoints を返す。 endpoints は
 // opaque な順序付き候補リスト (dialer=VP が解釈、 relay は混ぜない別レイヤー)。
-protocol "chronista-hub" version="0.2.0" {
+// v0.3.0: worlds.Unregister を additive 追加 (registry lifecycle — 自身の登録を撤回。
+// wld_id keyed の DELETE、 idempotent)。 Register と同じ federation.register scope。
+protocol "chronista-hub" version="0.3.0" {
     namespace "club.chronista.hub"
 
     // self-description — server が自分の KDL を hash 付きで返す (club-unison 組込)。
@@ -46,6 +48,18 @@ protocol "chronista-hub" version="0.2.0" {
             // worlds[] = { wld_id, handle, name, endpoints[], registered_at } (per-entry freeform json)。
             returns "WorldList" {
                 field "worlds" type="json" required=#true
+            }
+        }
+
+        request "Unregister" description="Deregister a VP world from the hub registry (idempotent). Provide wld_id (preferred) or handle." {
+            // wld_id (推奨) か handle のどちらかで対象を指す (register_world と同じ rid 解決)。
+            field "wld_id" type="string"
+            field "handle" type="string"
+            returns "Unregistered" {
+                field "wld_id" type="string"
+                field "handle" type="string"
+                // removed = 削除した entry 数 (0=対象なし / 1=削除)。 idempotent。
+                field "removed" type="json" required=#true
             }
         }
     }

@@ -217,6 +217,23 @@ async fn handle_worlds(
                 .collect();
             Ok(json!({ "worlds": list }))
         }
+        "Unregister" => {
+            // deregister は自身の登録の撤回 = Register と同じ scope で gate (ADR-020 §S3)。
+            authorize_federation(principal, "federation.register", auth_required)?;
+            // wld_id (推奨) か handle のどちらかで対象を指す。 register_world と同じ rid 解決。
+            let wld_id = payload.get("wld_id").and_then(|v| v.as_str());
+            let handle = payload.get("handle").and_then(|v| v.as_str());
+            if wld_id.is_none() && handle.is_none() {
+                return Err(anyhow::anyhow!("field 'wld_id' or 'handle' required"));
+            }
+            let removed = storage.unregister_world(wld_id, handle).await?;
+            tracing::info!(?wld_id, ?handle, removed, "world unregistered via Unison");
+            Ok(json!({
+                "wld_id": wld_id,
+                "handle": handle,
+                "removed": removed,
+            }))
+        }
         other => Err(anyhow::anyhow!(
             "unknown method '{other}' on channel 'worlds'"
         )),
