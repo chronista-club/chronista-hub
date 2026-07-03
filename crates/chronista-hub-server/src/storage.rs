@@ -9,6 +9,15 @@ use serde_json::{Map, Value, json};
 use crate::db::Db;
 use crate::model::{AppManifest, Resource, Visibility};
 
+/// REST の未認証 tree/resource read で **vp-world (federation registry) の非 public を
+/// 隠す** guard (ADR-020 §S5)。 owner/visibility 分離は Unison `worlds.Discover` が
+/// owner-aware に担うが、 同じ `vp-world` 行 (endpoints 入り) は auth 無しの REST
+/// `/v1/tree/@handle` / `/v1/resources/{id}` からも読めてしまう。 REST は principal を
+/// 持たない (全 caller 未認証扱い) ため owner 判定はできず、 **public のみ露出**して
+/// private/shared world の endpoints 漏洩を塞ぐ。 product resource (type != vp-world) は
+/// 一切影響を受けない。
+const VP_WORLD_REST_GUARD: &str = " AND NOT (type = 'vp-world' AND visibility != 'public')";
+
 #[derive(Debug, Clone, Default)]
 pub struct TreeReadOptions {
     pub visibility: Option<Visibility>,
@@ -84,7 +93,7 @@ impl Storage {
     ) -> anyhow::Result<Vec<Resource>> {
         let (clause, limit) = filter_clause(options);
         let sql = format!(
-            "SELECT * FROM hub_resource WHERE handle = $handle{clause} ORDER BY createdAt{limit}"
+            "SELECT * FROM hub_resource WHERE handle = $handle{VP_WORLD_REST_GUARD}{clause} ORDER BY createdAt{limit}"
         );
         let mut binds = Map::new();
         binds.insert("handle".into(), json!(handle));
@@ -111,7 +120,7 @@ impl Storage {
         };
         let (clause, limit) = filter_clause(options);
         let sql = format!(
-            "SELECT * FROM hub_resource WHERE handle = $handle AND string::starts_with(path, $path){clause} ORDER BY createdAt{limit}"
+            "SELECT * FROM hub_resource WHERE handle = $handle AND string::starts_with(path, $path){VP_WORLD_REST_GUARD}{clause} ORDER BY createdAt{limit}"
         );
         let mut binds = Map::new();
         binds.insert("handle".into(), json!(handle));
@@ -127,9 +136,12 @@ impl Storage {
     }
 
     pub async fn get_resource_by_id(&self, id: &str) -> anyhow::Result<Option<Resource>> {
+        // vp-world 非 public を REST の直接 id read から隠す (§S5、 VP_WORLD_REST_GUARD)。
+        let sql =
+            format!("SELECT * FROM hub_resource WHERE rid = $id{VP_WORLD_REST_GUARD} LIMIT 1");
         let rows: Vec<Value> = self
             .db
-            .query("SELECT * FROM hub_resource WHERE rid = $id LIMIT 1")
+            .query(sql)
             .bind(("id", id.to_string()))
             .await?
             .take(0)?;
@@ -198,6 +210,12 @@ impl Storage {
     /// visibility は Discover の見せ方を決める (`list_worlds_visible_to` が対)。
     /// createdAt/updatedAt は DB 側 `time::now()` を string cast。 registered_at を返す。
     /// Unison `worlds.Register` の backing。 tree read (`/v1/tree/@handle`) にも即現れる。
+    ///
+    /// **owner guard (write-side、 ADR-020 §S5)**: UPSERT に `WHERE owner = NONE OR
+    /// owner = NULL OR owner = $owner` を付け、 **他人が既に持つ wld_id は上書きさせない**
+    /// (owner/endpoints/visibility の乗っ取り防止 — 別 owner の rid は no-op = 空返り →
+    /// Err)。 owner 無し (legacy/permissive) entry と自分の entry のみ書ける。 存在は漏らさない
+    /// (mismatch も generic error)。
     pub async fn register_world(
         &self,
         wld_id: Option<&str>,
@@ -220,7 +238,8 @@ impl Storage {
                     visibility: $visibility,
                     payload: { name: $name, wld_id: $wld_id, endpoints: $endpoints },
                     createdAt: <string> time::now(), updatedAt: <string> time::now()
-                };",
+                }
+                WHERE owner = NONE OR owner = NULL OR owner = $owner;",
             )
             .bind(("rid", rid))
             .bind(("handle", handle.to_string()))
@@ -231,13 +250,15 @@ impl Storage {
             .bind(("visibility", serde_json::to_value(visibility)?))
             .await?
             .take(0)?;
-        let registered_at = rows
+        // owner mismatch → UPSERT が既存 record を触らず空返り。 別 owner に取られている。
+        match rows
             .first()
             .and_then(|r| r.get("createdAt"))
             .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        Ok(registered_at)
+        {
+            Some(at) => Ok(at.to_string()),
+            None => anyhow::bail!("wld_id is already registered by another owner"),
+        }
     }
 
     /// world registry: `vp-world` resource を削除 (deregister)。 record id は
@@ -249,7 +270,12 @@ impl Storage {
     /// requester = 削除を求める principal の usr_id (ADR-020 §S5):
     /// - `Some(u)` → owner が u と一致するか、 owner 無し (legacy/未認証登録) の entry のみ
     ///   削除できる。 他人の world は消せない (owner mismatch は削除 0 = 存在も漏らさない)。
-    /// - `None` (permissive 未認証) → 従来通り無条件 (段階移行の非破壊、 required 反転で閉じる)。
+    /// - `None` (未認証 permissive、 または owner を持たない App principal) → **owner 無し
+    ///   entry のみ** 削除できる。 認証済み user が owner を付けた world は、 未認証・App
+    ///   どちらの経路からも消せない (無条件 DELETE は §S5 の isolation を破るため廃止)。
+    ///
+    /// どちらの分岐も owner を持つ他人の world には触れない。 owner 無し entry を誰でも
+    /// 消せる点は permissive window の受容リスク (stale 掃除経路、 required 反転で縮小)。
     pub async fn unregister_world(
         &self,
         wld_id: Option<&str>,
@@ -267,7 +293,11 @@ impl Storage {
                 "DELETE type::record('hub_resource', $rid)
                  WHERE owner = NONE OR owner = NULL OR owner = $requester RETURN BEFORE"
             }
-            None => "DELETE type::record('hub_resource', $rid) RETURN BEFORE",
+            // 未認証 / App principal は owner 無し entry のみ (他人の owned world は不可)。
+            None => {
+                "DELETE type::record('hub_resource', $rid)
+                 WHERE owner = NONE OR owner = NULL RETURN BEFORE"
+            }
         };
         let removed: Vec<Value> = self
             .db

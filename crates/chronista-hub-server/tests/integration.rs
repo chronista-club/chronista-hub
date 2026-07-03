@@ -323,6 +323,196 @@ async fn world_owner_visibility_isolation() {
     );
 }
 
+/// write-side owner guard (ADR-020 §S5): 他人の wld_id を Register で乗っ取れない
+/// (owner/endpoints/visibility の上書き防止)。 未認証・App も owned world を消せない。
+#[tokio::test]
+async fn world_register_hijack_and_delete_guards() {
+    let (storage, _log, _pt) = setup_mem().await;
+
+    // A が private world を owner 登録
+    storage
+        .register_world(
+            Some("wld_x"),
+            "x",
+            "X",
+            &["[2400:4150::1]:32000".to_string()],
+            Some("usr_a"),
+            Visibility::Private,
+        )
+        .await
+        .unwrap();
+
+    // B が同じ wld_id で乗っ取ろうとする → Err (書き込まれない)
+    let hijack = storage
+        .register_world(
+            Some("wld_x"),
+            "x-evil",
+            "X Evil",
+            &["[dead:beef::1]:1".to_string()],
+            Some("usr_b"),
+            Visibility::Public,
+        )
+        .await;
+    assert!(hijack.is_err(), "B cannot hijack A's wld_id via Register");
+
+    // 未認証 (owner None) も乗っ取れない
+    let hijack_anon = storage
+        .register_world(
+            Some("wld_x"),
+            "x-anon",
+            "X Anon",
+            &["[dead:beef::2]:2".to_string()],
+            None,
+            Visibility::Public,
+        )
+        .await;
+    assert!(
+        hijack_anon.is_err(),
+        "anonymous cannot hijack A's owned wld_id"
+    );
+
+    // A の entry は無傷 (owner/endpoints/visibility そのまま)
+    let worlds = storage.list_resources_by_type("vp-world").await.unwrap();
+    assert_eq!(worlds.len(), 1);
+    assert_eq!(worlds[0].owner.as_deref(), Some("usr_a"));
+    assert_eq!(worlds[0].visibility, Visibility::Private);
+    assert_eq!(worlds[0].payload["endpoints"][0], "[2400:4150::1]:32000");
+
+    // 本人は自分の world を再 Register で更新できる (owner 一致)
+    storage
+        .register_world(
+            Some("wld_x"),
+            "x",
+            "X",
+            &["[2400:4150::1]:33000".to_string()],
+            Some("usr_a"),
+            Visibility::Public,
+        )
+        .await
+        .unwrap();
+    let worlds = storage.list_resources_by_type("vp-world").await.unwrap();
+    assert_eq!(
+        worlds[0].visibility,
+        Visibility::Public,
+        "owner self-update ok"
+    );
+    assert_eq!(worlds[0].payload["endpoints"][0], "[2400:4150::1]:33000");
+
+    // 未認証 (requester None) は A の owned world を消せない (§S5、 permissive path guard)
+    let removed = storage
+        .unregister_world(Some("wld_x"), None, None)
+        .await
+        .unwrap();
+    assert_eq!(removed, 0, "anonymous cannot delete an owned world");
+
+    // owner 無し entry を追加 → 未認証でも掃除できる (stale 掃除経路は維持)
+    storage
+        .register_world(
+            Some("wld_free"),
+            "free",
+            "Free",
+            &[],
+            None,
+            Visibility::Public,
+        )
+        .await
+        .unwrap();
+    let removed = storage
+        .unregister_world(Some("wld_free"), None, None)
+        .await
+        .unwrap();
+    assert_eq!(removed, 1, "anonymous can still clean ownerless entries");
+}
+
+/// REST 迂回防止 (ADR-020 §S5、 VP_WORLD_REST_GUARD): 未認証 REST read
+/// (`/v1/tree/@handle`・`/v1/resources/{id}` の backing) から vp-world の非 public を
+/// 隠す。 product resource (type != vp-world) は private でも従来通り読める (guard 非対象)。
+#[tokio::test]
+async fn rest_read_hides_nonpublic_vp_worlds() {
+    let (storage, _log, _pt) = setup_mem().await;
+    let opts = TreeReadOptions::default();
+
+    // 同じ handle の下に public / private の vp-world + private の product resource
+    storage
+        .register_world(
+            Some("wld_pub"),
+            "alice",
+            "Alice Public",
+            &["[2400:4150::1]:32000".to_string()],
+            Some("usr_a"),
+            Visibility::Public,
+        )
+        .await
+        .unwrap();
+    storage
+        .register_world(
+            Some("wld_priv"),
+            "alice",
+            "Alice Private",
+            &["[2400:4150::9]:32000".to_string()],
+            Some("usr_a"),
+            Visibility::Private,
+        )
+        .await
+        .unwrap();
+    storage
+        .upsert_resource(&Resource {
+            visibility: Visibility::Private,
+            ..sample_resource("atlas_p", "alice")
+        })
+        .await
+        .unwrap();
+
+    // tree read (handle): private vp-world だけ落ち、 product は private でも残る
+    let tree = storage
+        .get_resources_by_handle("alice", &opts)
+        .await
+        .unwrap();
+    let ids: Vec<&str> = tree.iter().map(|r| r.id.as_str()).collect();
+    assert!(ids.contains(&"vp-world:wld_pub"), "public world visible");
+    assert!(
+        !ids.contains(&"vp-world:wld_priv"),
+        "private world hidden from REST tree"
+    );
+    assert!(ids.contains(&"atlas_p"), "private product unaffected");
+
+    // path read も同じ guard
+    let by_path = storage
+        .get_resources_by_path("alice", "/", &opts)
+        .await
+        .unwrap();
+    assert!(
+        !by_path.iter().any(|r| r.id == "vp-world:wld_priv"),
+        "private world hidden from path read"
+    );
+
+    // 直接 id read: private vp-world は存在ごと見えない、 public / product は読める
+    assert!(
+        storage
+            .get_resource_by_id("vp-world:wld_priv")
+            .await
+            .unwrap()
+            .is_none(),
+        "private world hidden by id"
+    );
+    assert!(
+        storage
+            .get_resource_by_id("vp-world:wld_pub")
+            .await
+            .unwrap()
+            .is_some(),
+        "public world readable by id"
+    );
+    assert!(
+        storage
+            .get_resource_by_id("atlas_p")
+            .await
+            .unwrap()
+            .is_some(),
+        "private product readable by id"
+    );
+}
+
 #[tokio::test]
 async fn event_log_append_and_dedup() {
     let (_storage, log, _pt) = setup_mem().await;
