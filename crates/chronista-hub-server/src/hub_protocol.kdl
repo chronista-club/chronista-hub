@@ -14,7 +14,12 @@
 // v0.4.0 (ADR-020 §S4): relay channel を additive 追加 (universal floor — direct 全滅時に
 // hub が source→target を中継)。 source が open で {to,from} を宣言 → hub が target の
 // server-initiated stream (club-unison 1.5.0) に forward。 片方向 (D5「片方向 tell」)、 opaque。
-protocol "chronista-hub" version="0.4.0" {
+// v0.5.0 (ADR-020 §S5): owner/visibility 分離。 Register が connection principal の usr_id を
+// owner として記録し、 visibility ('public'|'private'、 省略時: 認証済=private / 未認証=public、
+// 'shared' は audience/group モデル導入まで予約) を additive 受理。 Discover は
+// 「自分が owner の world + public」のみ返す (未認証 permissive は public のみ)。
+// Unregister は owner guard (他人の world は消せない、 owner 無し legacy entry は掃除可)。
+protocol "chronista-hub" version="0.5.0" {
     namespace "club.chronista.hub"
 
     // self-description — server が自分の KDL を hash 付きで返す (club-unison 組込)。
@@ -39,16 +44,22 @@ protocol "chronista-hub" version="0.4.0" {
             field "wld_id" type="string"
             // endpoints = direct 到達候補 (string 配列 "[GUA]:port")。 順序付き、 空=direct 候補なし。
             field "endpoints" type="json"
+            // visibility = 'public' | 'private' (v0.5.0、 ADR-020 §S5)。 省略時: 認証済 (owner
+            // 記録あり) = private / 未認証 permissive = public。 'shared' は group/audience
+            // モデル導入までエラー (予約席)。 owner は field でなく connection principal 由来。
+            field "visibility" type="string"
             returns "Registered" {
                 field "wld_id" type="string"
                 field "handle" type="string" required=#true
                 field "registered_at" type="string" required=#true
                 field "endpoints" type="json"
+                field "visibility" type="string"
             }
         }
 
-        request "Discover" description="List VP worlds registered in this hub, for mutual discovery." {
-            // worlds[] = { wld_id, handle, name, endpoints[], registered_at } (per-entry freeform json)。
+        request "Discover" description="List VP worlds visible to the caller: own worlds + public ones (anonymous callers see public only)." {
+            // worlds[] = { wld_id, handle, name, endpoints[], registered_at, visibility }
+            // (per-entry freeform json)。 見える範囲 = 自分が owner の world + public (§S5)。
             returns "WorldList" {
                 field "worlds" type="json" required=#true
             }

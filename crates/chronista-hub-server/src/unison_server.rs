@@ -29,6 +29,7 @@ use unison::network::{MessageType, ProtocolMessage, ProtocolServer, UnisonStream
 
 use crate::auth::Verifier;
 use crate::config::UnisonCert;
+use crate::model::Visibility;
 use crate::storage::Storage;
 
 /// hub の Unison protocol schema (channels: unison.discovery + worlds + relay)。
@@ -259,7 +260,43 @@ fn build_cert_source(cert: UnisonCert, cert_out: Option<&str>) -> Result<CertSou
     }
 }
 
-/// `worlds` channel の method dispatch。 federation scope を arm ごとに検証する (ADR-020 §S3)。
+/// connection principal から owner usr_id を取り出す (ADR-020 §S5)。
+///
+/// User principal のみ owner になれる (spec `resource-base.owner` は usr_id ref)。
+/// App principal / 未認証は None — owner 無し登録として扱う。
+fn principal_usr_id(principal: Option<&unison::network::Principal>) -> Option<String> {
+    principal
+        .and_then(|p| p.downcast_ref::<crate::auth::Principal>())
+        .and_then(|hp| match hp {
+            crate::auth::Principal::User { user_id, .. } => Some(user_id.clone()),
+            crate::auth::Principal::App { .. } => None,
+        })
+}
+
+/// Register payload の `visibility` を解決する (ADR-020 §S5、 spec `resource-base.visibility`)。
+///
+/// - 明示 `public` / `private` はそのまま。 `shared` は audience/group モデル導入まで拒否
+///   (予約席 — 黙って private 扱いにすると「shared のつもりが誰にも見えない」事故になる)。
+/// - 省略時: owner 有り = `private` (spec default = secure by default)。 owner 無し
+///   (未認証 permissive 登録) = `public` — private は owner 概念なしには定義できず
+///   (誰にも見えない dead entry になる)、 旧 client の相互発見も壊さない (非破壊)。
+fn parse_visibility(payload: &Value, owner: Option<&str>) -> Result<Visibility> {
+    match payload.get("visibility").and_then(|v| v.as_str()) {
+        Some("public") => Ok(Visibility::Public),
+        Some("private") => Ok(Visibility::Private),
+        Some("shared") => Err(anyhow::anyhow!(
+            "visibility 'shared' is not yet supported (audience/group model pending)"
+        )),
+        Some(other) => Err(anyhow::anyhow!(
+            "unknown visibility '{other}' (expected 'public' or 'private')"
+        )),
+        None if owner.is_some() => Ok(Visibility::Private),
+        None => Ok(Visibility::Public),
+    }
+}
+
+/// `worlds` channel の method dispatch。 参加資格 (authorize) → owner/visibility で
+/// 見せ方を絞る二層 gate (ADR-020 §S3 + §S5)。
 async fn handle_worlds(
     storage: &Storage,
     principal: Option<&unison::network::Principal>,
@@ -290,12 +327,25 @@ async fn handle_worlds(
                         .collect()
                 })
                 .unwrap_or_default();
+            // owner = connection principal の usr_id (ADR-020 §S5)。 visibility は
+            // payload 明示 > default (owner 有=private / 無=public)。
+            let owner = principal_usr_id(principal);
+            let visibility = parse_visibility(&payload, owner.as_deref())?;
             let registered_at = storage
-                .register_world(wld_id, handle, name, &endpoints)
+                .register_world(
+                    wld_id,
+                    handle,
+                    name,
+                    &endpoints,
+                    owner.as_deref(),
+                    visibility,
+                )
                 .await?;
             tracing::info!(
                 handle,
                 ?wld_id,
+                ?owner,
+                ?visibility,
                 endpoint_count = endpoints.len(),
                 "world registered via Unison"
             );
@@ -304,11 +354,14 @@ async fn handle_worlds(
                 "handle": handle,
                 "registered_at": registered_at,
                 "endpoints": endpoints,
+                "visibility": visibility,
             }))
         }
         "Discover" => {
             authorize_federation(principal, "federation.read", auth_required)?;
-            let worlds = storage.list_resources_by_type("vp-world").await?;
+            // 見える範囲 = 自分が owner の world + public (未認証は public のみ、 §S5)。
+            let viewer = principal_usr_id(principal);
+            let worlds = storage.list_worlds_visible_to(viewer.as_deref()).await?;
             let list: Vec<Value> = worlds
                 .iter()
                 .map(|w| {
@@ -318,6 +371,7 @@ async fn handle_worlds(
                         "name": w.payload.get("name").and_then(|v| v.as_str()).unwrap_or(&w.handle),
                         "endpoints": w.payload.get("endpoints").cloned().unwrap_or_else(|| json!([])),
                         "registered_at": w.created_at,
+                        "visibility": w.visibility,
                     })
                 })
                 .collect();
@@ -332,7 +386,11 @@ async fn handle_worlds(
             if wld_id.is_none() && handle.is_none() {
                 return Err(anyhow::anyhow!("field 'wld_id' or 'handle' required"));
             }
-            let removed = storage.unregister_world(wld_id, handle).await?;
+            // requester = principal の usr_id。 他人の world は消せない (§S5、 storage 側 guard)。
+            let requester = principal_usr_id(principal);
+            let removed = storage
+                .unregister_world(wld_id, handle, requester.as_deref())
+                .await?;
             tracing::info!(?wld_id, ?handle, removed, "world unregistered via Unison");
             Ok(json!({
                 "wld_id": wld_id,
@@ -346,9 +404,12 @@ async fn handle_worlds(
     }
 }
 
-/// federation scope を検証する (ADR-020 §S3 / ADR-006 `federation.*` scope)。
+/// federation 参加資格を検証する (ADR-020 §S3 → §S5 で hub = authority に改定)。
 ///
-/// - principal 有 → hub [`crate::auth::Principal`] に downcast して scope を確認。
+/// - **User principal → 認証済みであること自体が参加資格** (user-jwt は身元証明のみ。
+///   scope claim は見ない — Creo ID の scope 発行に依存せず、 「何が見えるか」は
+///   owner/visibility の二層目が絞る)。
+/// - **App principal → scopes を確認** (product-token は hub 発行 = scope も hub authority)。
 /// - principal 無 → `auth_required` なら拒否、 permissive なら警告して通す
 ///   (credential 未提示の現 client を壊さず段階移行する)。
 fn authorize_federation(
@@ -358,7 +419,12 @@ fn authorize_federation(
 ) -> Result<()> {
     match principal {
         Some(p) => match p.downcast_ref::<crate::auth::Principal>() {
-            Some(hp) if hp.scopes().iter().any(|s| s == required_scope) => Ok(()),
+            Some(crate::auth::Principal::User { .. }) => Ok(()),
+            Some(hp @ crate::auth::Principal::App { .. })
+                if hp.scopes().iter().any(|s| s == required_scope) =>
+            {
+                Ok(())
+            }
             Some(_) => Err(anyhow::anyhow!(
                 "insufficient scope: '{required_scope}' required"
             )),
@@ -501,5 +567,77 @@ mod tests {
         let op = relay_open("wld_a");
         let v = op.payload_as_value().unwrap();
         assert_eq!(v["from"], "wld_a");
+    }
+
+    fn user_principal(user_id: &str, scopes: Vec<String>) -> unison::network::Principal {
+        Arc::new(crate::auth::Principal::User {
+            user_id: user_id.to_string(),
+            handle: None,
+            scopes,
+        })
+    }
+
+    fn app_principal(app_id: &str, scopes: Vec<String>) -> unison::network::Principal {
+        Arc::new(crate::auth::Principal::App {
+            app_id: app_id.to_string(),
+            scopes,
+        })
+    }
+
+    /// hub = authority (ADR-020 §S5): User は認証済みであること自体が参加資格
+    /// (scope claim 不要)。 App は hub 発行 scope を要求。 未認証は mode 次第。
+    #[test]
+    fn authorize_federation_hub_authority() {
+        // User: scope 空でも認証済みなら通る (user-jwt は身元証明のみ)
+        let u = user_principal("usr_a", vec![]);
+        assert!(authorize_federation(Some(&u), "federation.read", true).is_ok());
+
+        // App: scope 有りは通り、無しは拒否 (product-token = hub 発行 scope)
+        let a_ok = app_principal("vp", vec!["federation.read".into()]);
+        assert!(authorize_federation(Some(&a_ok), "federation.read", true).is_ok());
+        let a_ng = app_principal("vp", vec!["events.write".into()]);
+        assert!(authorize_federation(Some(&a_ng), "federation.read", true).is_err());
+
+        // 未認証: required は拒否 / permissive は通す (段階移行)
+        assert!(authorize_federation(None, "federation.read", true).is_err());
+        assert!(authorize_federation(None, "federation.read", false).is_ok());
+    }
+
+    /// principal_usr_id: User → usr_id / App・未認証 → None (owner になれるのは User のみ)。
+    #[test]
+    fn principal_usr_id_extraction() {
+        let u = user_principal("usr_a", vec![]);
+        assert_eq!(principal_usr_id(Some(&u)), Some("usr_a".to_string()));
+        let a = app_principal("vp", vec![]);
+        assert_eq!(principal_usr_id(Some(&a)), None);
+        assert_eq!(principal_usr_id(None), None);
+    }
+
+    /// parse_visibility (ADR-020 §S5): 明示 > default (owner 有=private / 無=public)。
+    /// shared は audience モデル導入まで拒否 (黙殺しない)。
+    #[test]
+    fn parse_visibility_rules() {
+        // 明示指定はそのまま
+        let pl = json!({ "visibility": "public" });
+        assert_eq!(
+            parse_visibility(&pl, Some("usr_a")).unwrap(),
+            Visibility::Public
+        );
+        let pl = json!({ "visibility": "private" });
+        assert_eq!(parse_visibility(&pl, None).unwrap(), Visibility::Private);
+
+        // 省略: owner 有 = private (secure by default) / 無 = public (非破壊)
+        let pl = json!({});
+        assert_eq!(
+            parse_visibility(&pl, Some("usr_a")).unwrap(),
+            Visibility::Private
+        );
+        assert_eq!(parse_visibility(&pl, None).unwrap(), Visibility::Public);
+
+        // shared は予約席 (明示エラー)、 未知値も拒否
+        let pl = json!({ "visibility": "shared" });
+        assert!(parse_visibility(&pl, Some("usr_a")).is_err());
+        let pl = json!({ "visibility": "friends" });
+        assert!(parse_visibility(&pl, Some("usr_a")).is_err());
     }
 }
