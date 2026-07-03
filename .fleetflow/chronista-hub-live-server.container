@@ -20,10 +20,12 @@
 #   - 12879:7879/udp  Unison(QUIC) → 直 expose。 federation addr = hub.chronista.club:12879
 #
 # LIVE 前提 (DEPLOY.md「live」参照):
-#   1. ✅ Unison cert: ADR-020 §S1 で CertSource 配線済 (.env.live の CHRONISTA_HUB_CERT_MODE
-#      = self-signed、 SAN=hub.chronista.club、 cert DER を CERT_OUT に export → VP が
-#      TrustAnchors::Custom に pin)。 federation の direct path = IPv6 GUA (ADR-020 D3)。
-#      残るは op 設定 (AAAA レコード + IPv6 UDP firewall、 DEPLOY.md Step 0)。
+#   1. ✅ Unison cert: ADR-020 §S1 で CertSource 配線済。 cert 永続化 = 実 CA path
+#      (.env.live の CHRONISTA_HUB_CERT_MODE=file、 Let's Encrypt fullchain+key を
+#      data/live=/app/data に acme.sh が DNS-01 deploy → VP は TrustAnchors::System で
+#      検証 = pin 不要・cert 配布不要、 restart/rotate で client 無変更)。 cert files が
+#      data/live に在ることが起動前提 (未発行なら .env を self-signed fallback に)。
+#      federation の direct path = IPv6 GUA (ADR-020 D3)。
 #   2. /@handle public route: hub は現状 /v1/tree/{handle} のみ (federation と独立した別トラック)。
 #   3. portal: apex landing は pure Caddy (別 service 不要)。
 
@@ -34,6 +36,9 @@ Wants=network-online.target
 
 [Container]
 Image=ghcr.io/chronista-club/chronista-hub-server:latest
+# :latest は local cache が在ると podman が再 pull しない → restart 時に registry の最新を取得。
+# (2026-06-28 に古い :latest を掴む stale-image 罠を踏んだ。DEPLOY.md「live」参照)
+Pull=newer
 ContainerName=chronista-hub-live-server
 EnvironmentFile=%h/chronista-hub/.env.live.server
 PublishPort=12880:3000/tcp

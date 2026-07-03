@@ -14,22 +14,88 @@
 //! (main.rs で `rustls::crypto::ring::default_provider().install_default()`)。
 //! quinn と surrealdb/reqwest で provider feature が両立し auto-detect が panic するため。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+use tokio::sync::RwLock;
 
 use unison::ServerHandle;
 use unison::network::cert::CertSource;
 use unison::network::channel::UnisonChannel;
-use unison::network::{MessageType, ProtocolServer};
+use unison::network::context::ConnectionContext;
+use unison::network::{MessageType, ProtocolMessage, ProtocolServer, UnisonStream};
 
 use crate::auth::Verifier;
 use crate::config::UnisonCert;
+use crate::model::Visibility;
 use crate::storage::Storage;
 
-/// hub の Unison protocol schema (channels: unison.discovery + worlds)。
+/// hub の Unison protocol schema (channels: unison.discovery + worlds + relay)。
 const HUB_PROTOCOL_KDL: &str = include_str!("hub_protocol.kdl");
+
+/// relay 用 transient registry: `wld_id → 当該 world の connection ctx` (ADR-020 §S4 / D1)。
+///
+/// **durable 0 = D1**: connection ごとに `worlds.Register` で挿入、 connection close で除去。
+/// substrate (club-unison) には connection lookup を持ち込まず、 hub が application で保持する
+/// (剃刀 — `design/server-initiated-stream.md` §7)。 値の `ctx` は server 側で `conn` が
+/// set 済みなので `ctx.open_server_stream(...)` で target へ reliable stream を開ける。
+type RelayRegistry = Arc<RwLock<HashMap<String, Arc<ConnectionContext>>>>;
+
+/// source への status frame (`{status, detail}`)。 status = established / offline / error。
+fn relay_status(status: &str, detail: &str) -> ProtocolMessage {
+    ProtocolMessage::new_with_json(
+        0,
+        "status".to_string(),
+        MessageType::Event,
+        json!({ "status": status, "detail": detail }),
+    )
+    .unwrap_or_else(|_| {
+        ProtocolMessage::new_encoded(0, "status".to_string(), MessageType::Event, Vec::new())
+    })
+}
+
+/// target への open 宣言 frame (`{from}` = 送信元 wld_id)。
+fn relay_open(from: &str) -> ProtocolMessage {
+    ProtocolMessage::new_with_json(
+        0,
+        "open".to_string(),
+        MessageType::Event,
+        json!({ "from": from }),
+    )
+    .unwrap_or_else(|_| {
+        ProtocolMessage::new_encoded(0, "open".to_string(), MessageType::Event, Vec::new())
+    })
+}
+
+/// `worlds.Register`/`Unregister` の結果を relay registry へ反映する (wld_id keyed、 D1 transient)。
+/// `registered` は当該 connection が登録した wld_id 群 (close 時の cleanup 用)。
+async fn sync_relay_registry(
+    registry: &RelayRegistry,
+    ctx: &Arc<ConnectionContext>,
+    method: &str,
+    reply: &Value,
+    registered: &mut Vec<String>,
+) {
+    let wld = reply.get("wld_id").and_then(|v| v.as_str());
+    match (method, wld) {
+        ("Register", Some(w)) => {
+            registry
+                .write()
+                .await
+                .insert(w.to_string(), Arc::clone(ctx));
+            if !registered.iter().any(|x| x == w) {
+                registered.push(w.to_string());
+            }
+        }
+        ("Unregister", Some(w)) => {
+            registry.write().await.remove(w);
+            registered.retain(|x| x != w);
+        }
+        _ => {}
+    }
+}
 
 /// Unison server を spawn し、 axum と同一 runtime で動く [`ServerHandle`] を返す。
 /// handle は drop で shutdown するので、 呼び出し側でプロセス生存期間 hold すること。
@@ -63,48 +129,89 @@ pub async fn spawn_unison(
             .await;
     }
 
-    server
-        .register_channel("worlds", move |ctx, stream| {
-            // register_channel は Fn (接続毎に呼ばれる) なので、 storage は毎回 clone する。
-            let storage = storage.clone();
-            async move {
-                let channel = UnisonChannel::new(stream);
-                loop {
-                    match channel.recv().await {
-                        Ok(msg) if msg.msg_type == MessageType::Request => {
-                            let payload = msg.payload_as_value().unwrap_or_default();
-                            // principal は unison.auth で connection に立つ (未認証なら None)。
-                            let principal = ctx.principal().await;
-                            let reply = handle_worlds(
-                                &storage,
-                                principal.as_ref(),
-                                auth_required,
-                                &msg.method,
-                                payload,
-                            )
-                            .await
-                            .unwrap_or_else(|e| json!({ "error": e.to_string() }));
-                            if channel
-                                .send_response(msg.id, &msg.method, &reply)
+    // relay registry (ADR-020 §S4): worlds.Register で wld_id → ctx を transient 登録し、
+    // relay channel が target ctx を引いて open_server_stream する。 hub の application state (D1)。
+    let relay_registry: RelayRegistry = Arc::new(RwLock::new(HashMap::new()));
+
+    {
+        let storage = storage.clone();
+        let relay_registry = relay_registry.clone();
+        server
+            .register_channel("worlds", move |ctx, stream| {
+                // register_channel は Fn (接続毎に呼ばれる) なので、 毎回 clone する。
+                let storage = storage.clone();
+                let relay_registry = relay_registry.clone();
+                async move {
+                    let channel = UnisonChannel::new(stream);
+                    // この connection が登録した wld_id (close 時に registry から除去 = D1)。
+                    let mut registered: Vec<String> = Vec::new();
+                    let result = loop {
+                        match channel.recv().await {
+                            Ok(msg) if msg.msg_type == MessageType::Request => {
+                                let payload = msg.payload_as_value().unwrap_or_default();
+                                // principal は unison.auth で connection に立つ (未認証なら None)。
+                                let principal = ctx.principal().await;
+                                let reply = handle_worlds(
+                                    &storage,
+                                    principal.as_ref(),
+                                    auth_required,
+                                    &msg.method,
+                                    payload,
+                                )
                                 .await
-                                .is_err()
-                            {
-                                break;
+                                .unwrap_or_else(|e| json!({ "error": e.to_string() }));
+                                // relay registry を Register/Unregister に追従 (wld_id → ctx)。
+                                sync_relay_registry(
+                                    &relay_registry,
+                                    &ctx,
+                                    &msg.method,
+                                    &reply,
+                                    &mut registered,
+                                )
+                                .await;
+                                if channel
+                                    .send_response(msg.id, &msg.method, &reply)
+                                    .await
+                                    .is_err()
+                                {
+                                    break Ok(());
+                                }
                             }
+                            Ok(_) => continue,
+                            Err(e) if e.is_normal_close() => break Ok(()),
+                            Err(e) => break Err(e),
                         }
-                        Ok(_) => continue,
-                        Err(e) if e.is_normal_close() => return Ok(()),
-                        Err(e) => return Err(e),
+                    };
+                    // cleanup: connection が消えたら登録 wld_id を registry から除去 (transient = D1)。
+                    if !registered.is_empty() {
+                        let mut reg = relay_registry.write().await;
+                        for w in &registered {
+                            reg.remove(w);
+                        }
                     }
+                    result
                 }
-                Ok(())
-            }
-        })
-        .await;
+            })
+            .await;
+    }
+
+    // relay channel (ADR-020 §S4 = universal floor): direct 全滅時に hub が中継する。 source が
+    // {to, from} を宣言 → hub が target ctx を registry から引いて open_server_stream で reliable な
+    // server-initiated stream を開き、 source → target を dumb forward (片方向 = D5「片方向 tell」、
+    // payload は opaque)。 双方向は B→A を B が relay することで創発する。
+    {
+        let relay_registry = relay_registry.clone();
+        server
+            .register_channel("relay", move |ctx, stream| {
+                let relay_registry = relay_registry.clone();
+                async move { handle_relay(&relay_registry, &ctx, auth_required, stream).await }
+            })
+            .await;
+    }
 
     let cert_source = build_cert_source(cert, cert_out.as_deref())?;
     let handle = server.spawn_listen_with_cert(addr, cert_source).await?;
-    tracing::info!(%addr, "Unison surface listening (channels: unison.discovery, worlds)");
+    tracing::info!(%addr, "Unison surface listening (channels: unison.discovery, worlds, relay)");
     Ok(handle)
 }
 
@@ -153,7 +260,43 @@ fn build_cert_source(cert: UnisonCert, cert_out: Option<&str>) -> Result<CertSou
     }
 }
 
-/// `worlds` channel の method dispatch。 federation scope を arm ごとに検証する (ADR-020 §S3)。
+/// connection principal から owner usr_id を取り出す (ADR-020 §S5)。
+///
+/// User principal のみ owner になれる (spec `resource-base.owner` は usr_id ref)。
+/// App principal / 未認証は None — owner 無し登録として扱う。
+fn principal_usr_id(principal: Option<&unison::network::Principal>) -> Option<String> {
+    principal
+        .and_then(|p| p.downcast_ref::<crate::auth::Principal>())
+        .and_then(|hp| match hp {
+            crate::auth::Principal::User { user_id, .. } => Some(user_id.clone()),
+            crate::auth::Principal::App { .. } => None,
+        })
+}
+
+/// Register payload の `visibility` を解決する (ADR-020 §S5、 spec `resource-base.visibility`)。
+///
+/// - 明示 `public` / `private` はそのまま。 `shared` は audience/group モデル導入まで拒否
+///   (予約席 — 黙って private 扱いにすると「shared のつもりが誰にも見えない」事故になる)。
+/// - 省略時: owner 有り = `private` (spec default = secure by default)。 owner 無し
+///   (未認証 permissive 登録) = `public` — private は owner 概念なしには定義できず
+///   (誰にも見えない dead entry になる)、 旧 client の相互発見も壊さない (非破壊)。
+fn parse_visibility(payload: &Value, owner: Option<&str>) -> Result<Visibility> {
+    match payload.get("visibility").and_then(|v| v.as_str()) {
+        Some("public") => Ok(Visibility::Public),
+        Some("private") => Ok(Visibility::Private),
+        Some("shared") => Err(anyhow::anyhow!(
+            "visibility 'shared' is not yet supported (audience/group model pending)"
+        )),
+        Some(other) => Err(anyhow::anyhow!(
+            "unknown visibility '{other}' (expected 'public' or 'private')"
+        )),
+        None if owner.is_some() => Ok(Visibility::Private),
+        None => Ok(Visibility::Public),
+    }
+}
+
+/// `worlds` channel の method dispatch。 参加資格 (authorize) → owner/visibility で
+/// 見せ方を絞る二層 gate (ADR-020 §S3 + §S5)。
 async fn handle_worlds(
     storage: &Storage,
     principal: Option<&unison::network::Principal>,
@@ -184,12 +327,25 @@ async fn handle_worlds(
                         .collect()
                 })
                 .unwrap_or_default();
+            // owner = connection principal の usr_id (ADR-020 §S5)。 visibility は
+            // payload 明示 > default (owner 有=private / 無=public)。
+            let owner = principal_usr_id(principal);
+            let visibility = parse_visibility(&payload, owner.as_deref())?;
             let registered_at = storage
-                .register_world(wld_id, handle, name, &endpoints)
+                .register_world(
+                    wld_id,
+                    handle,
+                    name,
+                    &endpoints,
+                    owner.as_deref(),
+                    visibility,
+                )
                 .await?;
             tracing::info!(
                 handle,
                 ?wld_id,
+                ?owner,
+                ?visibility,
                 endpoint_count = endpoints.len(),
                 "world registered via Unison"
             );
@@ -198,11 +354,14 @@ async fn handle_worlds(
                 "handle": handle,
                 "registered_at": registered_at,
                 "endpoints": endpoints,
+                "visibility": visibility,
             }))
         }
         "Discover" => {
             authorize_federation(principal, "federation.read", auth_required)?;
-            let worlds = storage.list_resources_by_type("vp-world").await?;
+            // 見える範囲 = 自分が owner の world + public (未認証は public のみ、 §S5)。
+            let viewer = principal_usr_id(principal);
+            let worlds = storage.list_worlds_visible_to(viewer.as_deref()).await?;
             let list: Vec<Value> = worlds
                 .iter()
                 .map(|w| {
@@ -212,10 +371,32 @@ async fn handle_worlds(
                         "name": w.payload.get("name").and_then(|v| v.as_str()).unwrap_or(&w.handle),
                         "endpoints": w.payload.get("endpoints").cloned().unwrap_or_else(|| json!([])),
                         "registered_at": w.created_at,
+                        "visibility": w.visibility,
                     })
                 })
                 .collect();
             Ok(json!({ "worlds": list }))
+        }
+        "Unregister" => {
+            // deregister は自身の登録の撤回 = Register と同じ scope で gate (ADR-020 §S3)。
+            authorize_federation(principal, "federation.register", auth_required)?;
+            // wld_id (推奨) か handle のどちらかで対象を指す。 register_world と同じ rid 解決。
+            let wld_id = payload.get("wld_id").and_then(|v| v.as_str());
+            let handle = payload.get("handle").and_then(|v| v.as_str());
+            if wld_id.is_none() && handle.is_none() {
+                return Err(anyhow::anyhow!("field 'wld_id' or 'handle' required"));
+            }
+            // requester = principal の usr_id。 他人の world は消せない (§S5、 storage 側 guard)。
+            let requester = principal_usr_id(principal);
+            let removed = storage
+                .unregister_world(wld_id, handle, requester.as_deref())
+                .await?;
+            tracing::info!(?wld_id, ?handle, removed, "world unregistered via Unison");
+            Ok(json!({
+                "wld_id": wld_id,
+                "handle": handle,
+                "removed": removed,
+            }))
         }
         other => Err(anyhow::anyhow!(
             "unknown method '{other}' on channel 'worlds'"
@@ -223,9 +404,12 @@ async fn handle_worlds(
     }
 }
 
-/// federation scope を検証する (ADR-020 §S3 / ADR-006 `federation.*` scope)。
+/// federation 参加資格を検証する (ADR-020 §S3 → §S5 で hub = authority に改定)。
 ///
-/// - principal 有 → hub [`crate::auth::Principal`] に downcast して scope を確認。
+/// - **User principal → 認証済みであること自体が参加資格** (user-jwt は身元証明のみ。
+///   scope claim は見ない — Creo ID の scope 発行に依存せず、 「何が見えるか」は
+///   owner/visibility の二層目が絞る)。
+/// - **App principal → scopes を確認** (product-token は hub 発行 = scope も hub authority)。
 /// - principal 無 → `auth_required` なら拒否、 permissive なら警告して通す
 ///   (credential 未提示の現 client を壊さず段階移行する)。
 fn authorize_federation(
@@ -235,7 +419,12 @@ fn authorize_federation(
 ) -> Result<()> {
     match principal {
         Some(p) => match p.downcast_ref::<crate::auth::Principal>() {
-            Some(hp) if hp.scopes().iter().any(|s| s == required_scope) => Ok(()),
+            Some(crate::auth::Principal::User { .. }) => Ok(()),
+            Some(hp @ crate::auth::Principal::App { .. })
+                if hp.scopes().iter().any(|s| s == required_scope) =>
+            {
+                Ok(())
+            }
             Some(_) => Err(anyhow::anyhow!(
                 "insufficient scope: '{required_scope}' required"
             )),
@@ -251,5 +440,204 @@ fn authorize_federation(
             );
             Ok(())
         }
+    }
+}
+
+/// `relay` channel handler (ADR-020 §S4 = universal floor)。
+///
+/// source の宣言 `{to, from}` を読み、 target ctx を [`RelayRegistry`] から引いて
+/// `open_server_stream` で reliable な server-initiated stream を開き、 source → target を
+/// **片方向に dumb forward** する (payload は opaque = D5、 hub は中身を覗かない)。 双方向は
+/// B→A を B が relay することで創発 (D5「片方向 tell の交換」)。 target offline は D3-c
+/// (hub は貯めず source に offline を返す → 送り手 home-World が reconcile)。
+async fn handle_relay(
+    registry: &RelayRegistry,
+    ctx: &Arc<ConnectionContext>,
+    auth_required: bool,
+    stream: UnisonStream,
+) -> std::result::Result<(), unison::network::NetworkError> {
+    // gate: federation 参加者 (federation.read)。 permissive default で現 client 無回帰。
+    let principal = ctx.principal().await;
+    if authorize_federation(principal.as_ref(), "federation.read", auth_required).is_err() {
+        let _ = stream
+            .send_frame(&relay_status("error", "unauthorized"))
+            .await;
+        return Ok(());
+    }
+    // 先頭 frame = 宛先宣言 {to, from}。
+    let open = match stream.recv_frame().await {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+    let pv = open.payload_as_value().unwrap_or_default();
+    let from = pv
+        .get("from")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let Some(to) = pv.get("to").and_then(|v| v.as_str()).map(str::to_string) else {
+        let _ = stream
+            .send_frame(&relay_status("error", "field 'to' required"))
+            .await;
+        return Ok(());
+    };
+    // target lookup (transient registry)。 不在 = offline → D3-c。
+    let target_ctx = registry.read().await.get(&to).cloned();
+    let Some(target_ctx) = target_ctx else {
+        let _ = stream.send_frame(&relay_status("offline", &to)).await;
+        return Ok(());
+    };
+    // target へ reliable な server-initiated stream を開く (club-unison 1.5.0 primitive)。
+    let target_stream = match target_ctx.open_server_stream("relay").await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = stream
+                .send_frame(&relay_status("error", &format!("open: {e}")))
+                .await;
+            return Ok(());
+        }
+    };
+    // target に送信元を宣言 ({from})。
+    if target_stream.send_frame(&relay_open(&from)).await.is_err() {
+        let _ = stream
+            .send_frame(&relay_status("error", "target unreachable"))
+            .await;
+        return Ok(());
+    }
+    let _ = stream.send_frame(&relay_status("established", &to)).await;
+    tracing::info!(from = %from, to = %to, "relay established (one-way, reliable)");
+    // dumb forward: source → target。 payload opaque (hub は覗かない = D5)。 source close /
+    // target write 失敗で抜ける (recv_frame Err = stream 終端)。
+    while let Ok(msg) = stream.recv_frame().await {
+        if target_stream.send_frame(&msg).await.is_err() {
+            break;
+        }
+    }
+    tracing::info!(from = %from, to = %to, "relay closed");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unison::network::context::ConnectionContext;
+
+    /// relay registry の lifecycle: Register で wld_id→ctx 挿入 / wld_id 無しは skip /
+    /// Unregister で除去 / connection 追跡 (registered) が一致する (ADR-020 §S4 / D1)。
+    #[tokio::test]
+    async fn relay_registry_register_skip_unregister() {
+        let registry: RelayRegistry = Arc::new(RwLock::new(HashMap::new()));
+        let ctx = Arc::new(ConnectionContext::new());
+        let mut registered: Vec<String> = Vec::new();
+
+        // Register (wld_id 有) → 挿入 + 追跡
+        let reply = json!({ "wld_id": "wld_a", "handle": "a", "registered_at": "t" });
+        sync_relay_registry(&registry, &ctx, "Register", &reply, &mut registered).await;
+        assert!(registry.read().await.contains_key("wld_a"));
+        assert_eq!(registered, vec!["wld_a".to_string()]);
+
+        // Register (wld_id 無し = 旧 client) → 挿入しない
+        let reply_nowld = json!({ "wld_id": null, "handle": "b" });
+        sync_relay_registry(&registry, &ctx, "Register", &reply_nowld, &mut registered).await;
+        assert_eq!(
+            registry.read().await.len(),
+            1,
+            "wld_id 無しは registry に入らない"
+        );
+
+        // 同 wld_id 再 Register → 追跡は重複しない
+        sync_relay_registry(&registry, &ctx, "Register", &reply, &mut registered).await;
+        assert_eq!(registered.len(), 1, "registered は wld_id 重複しない");
+
+        // Unregister → 除去 + 追跡から外れる
+        let unreg = json!({ "wld_id": "wld_a", "removed": 1 });
+        sync_relay_registry(&registry, &ctx, "Unregister", &unreg, &mut registered).await;
+        assert!(!registry.read().await.contains_key("wld_a"));
+        assert!(registered.is_empty());
+    }
+
+    /// relay control frame が JSON payload を正しく載せる (source status / target open 宣言)。
+    #[tokio::test]
+    async fn relay_control_frames() {
+        let st = relay_status("established", "wld_b");
+        let v = st.payload_as_value().unwrap();
+        assert_eq!(v["status"], "established");
+        assert_eq!(v["detail"], "wld_b");
+
+        let op = relay_open("wld_a");
+        let v = op.payload_as_value().unwrap();
+        assert_eq!(v["from"], "wld_a");
+    }
+
+    fn user_principal(user_id: &str, scopes: Vec<String>) -> unison::network::Principal {
+        Arc::new(crate::auth::Principal::User {
+            user_id: user_id.to_string(),
+            handle: None,
+            scopes,
+        })
+    }
+
+    fn app_principal(app_id: &str, scopes: Vec<String>) -> unison::network::Principal {
+        Arc::new(crate::auth::Principal::App {
+            app_id: app_id.to_string(),
+            scopes,
+        })
+    }
+
+    /// hub = authority (ADR-020 §S5): User は認証済みであること自体が参加資格
+    /// (scope claim 不要)。 App は hub 発行 scope を要求。 未認証は mode 次第。
+    #[test]
+    fn authorize_federation_hub_authority() {
+        // User: scope 空でも認証済みなら通る (user-jwt は身元証明のみ)
+        let u = user_principal("usr_a", vec![]);
+        assert!(authorize_federation(Some(&u), "federation.read", true).is_ok());
+
+        // App: scope 有りは通り、無しは拒否 (product-token = hub 発行 scope)
+        let a_ok = app_principal("vp", vec!["federation.read".into()]);
+        assert!(authorize_federation(Some(&a_ok), "federation.read", true).is_ok());
+        let a_ng = app_principal("vp", vec!["events.write".into()]);
+        assert!(authorize_federation(Some(&a_ng), "federation.read", true).is_err());
+
+        // 未認証: required は拒否 / permissive は通す (段階移行)
+        assert!(authorize_federation(None, "federation.read", true).is_err());
+        assert!(authorize_federation(None, "federation.read", false).is_ok());
+    }
+
+    /// principal_usr_id: User → usr_id / App・未認証 → None (owner になれるのは User のみ)。
+    #[test]
+    fn principal_usr_id_extraction() {
+        let u = user_principal("usr_a", vec![]);
+        assert_eq!(principal_usr_id(Some(&u)), Some("usr_a".to_string()));
+        let a = app_principal("vp", vec![]);
+        assert_eq!(principal_usr_id(Some(&a)), None);
+        assert_eq!(principal_usr_id(None), None);
+    }
+
+    /// parse_visibility (ADR-020 §S5): 明示 > default (owner 有=private / 無=public)。
+    /// shared は audience モデル導入まで拒否 (黙殺しない)。
+    #[test]
+    fn parse_visibility_rules() {
+        // 明示指定はそのまま
+        let pl = json!({ "visibility": "public" });
+        assert_eq!(
+            parse_visibility(&pl, Some("usr_a")).unwrap(),
+            Visibility::Public
+        );
+        let pl = json!({ "visibility": "private" });
+        assert_eq!(parse_visibility(&pl, None).unwrap(), Visibility::Private);
+
+        // 省略: owner 有 = private (secure by default) / 無 = public (非破壊)
+        let pl = json!({});
+        assert_eq!(
+            parse_visibility(&pl, Some("usr_a")).unwrap(),
+            Visibility::Private
+        );
+        assert_eq!(parse_visibility(&pl, None).unwrap(), Visibility::Public);
+
+        // shared は予約席 (明示エラー)、 未知値も拒否
+        let pl = json!({ "visibility": "shared" });
+        assert!(parse_visibility(&pl, Some("usr_a")).is_err());
+        let pl = json!({ "visibility": "friends" });
+        assert!(parse_visibility(&pl, Some("usr_a")).is_err());
     }
 }

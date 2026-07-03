@@ -9,7 +9,17 @@
 // endpoints (direct 到達候補、 string 配列 "[GUA]:port") を additive 追加。
 // hub は wld_id keyed で index し Discover で wld_id+endpoints を返す。 endpoints は
 // opaque な順序付き候補リスト (dialer=VP が解釈、 relay は混ぜない別レイヤー)。
-protocol "chronista-hub" version="0.2.0" {
+// v0.3.0: worlds.Unregister を additive 追加 (registry lifecycle — 自身の登録を撤回。
+// wld_id keyed の DELETE、 idempotent)。 Register と同じ federation.register scope。
+// v0.4.0 (ADR-020 §S4): relay channel を additive 追加 (universal floor — direct 全滅時に
+// hub が source→target を中継)。 source が open で {to,from} を宣言 → hub が target の
+// server-initiated stream (club-unison 1.5.0) に forward。 片方向 (D5「片方向 tell」)、 opaque。
+// v0.5.0 (ADR-020 §S5): owner/visibility 分離。 Register が connection principal の usr_id を
+// owner として記録し、 visibility ('public'|'private'、 省略時: 認証済=private / 未認証=public、
+// 'shared' は audience/group モデル導入まで予約) を additive 受理。 Discover は
+// 「自分が owner の world + public」のみ返す (未認証 permissive は public のみ)。
+// Unregister は owner guard (他人の world は消せない、 owner 無し legacy entry は掃除可)。
+protocol "chronista-hub" version="0.5.0" {
     namespace "club.chronista.hub"
 
     // self-description — server が自分の KDL を hash 付きで返す (club-unison 組込)。
@@ -34,18 +44,52 @@ protocol "chronista-hub" version="0.2.0" {
             field "wld_id" type="string"
             // endpoints = direct 到達候補 (string 配列 "[GUA]:port")。 順序付き、 空=direct 候補なし。
             field "endpoints" type="json"
+            // visibility = 'public' | 'private' (v0.5.0、 ADR-020 §S5)。 省略時: 認証済 (owner
+            // 記録あり) = private / 未認証 permissive = public。 'shared' は group/audience
+            // モデル導入までエラー (予約席)。 owner は field でなく connection principal 由来。
+            field "visibility" type="string"
             returns "Registered" {
                 field "wld_id" type="string"
                 field "handle" type="string" required=#true
                 field "registered_at" type="string" required=#true
                 field "endpoints" type="json"
+                field "visibility" type="string"
             }
         }
 
-        request "Discover" description="List VP worlds registered in this hub, for mutual discovery." {
-            // worlds[] = { wld_id, handle, name, endpoints[], registered_at } (per-entry freeform json)。
+        request "Discover" description="List VP worlds visible to the caller: own worlds + public ones (anonymous callers see public only)." {
+            // worlds[] = { wld_id, handle, name, endpoints[], registered_at, visibility }
+            // (per-entry freeform json)。 見える範囲 = 自分が owner の world + public (§S5)。
             returns "WorldList" {
                 field "worlds" type="json" required=#true
+            }
+        }
+
+        request "Unregister" description="Deregister a VP world from the hub registry (idempotent). Provide wld_id (preferred) or handle." {
+            // wld_id (推奨) か handle のどちらかで対象を指す (register_world と同じ rid 解決)。
+            field "wld_id" type="string"
+            field "handle" type="string"
+            returns "Unregistered" {
+                field "wld_id" type="string"
+                field "handle" type="string"
+                // removed = 削除した entry 数 (0=対象なし / 1=削除)。 idempotent。
+                field "removed" type="json" required=#true
+            }
+        }
+    }
+
+    // relay — universal floor (ADR-020 §S4)。 direct 全滅時に hub が source→target を中継。
+    // dialer が relay channel を開き open で宛先を宣言 → 以降の frame が target へ片方向 forward
+    // される (payload opaque、 hub は中身を覗かない = D5)。 target 側は server-initiated `relay`
+    // stream を register_server_channel("relay") で受信 (club-unison 1.5.0、 from="server")。
+    channel "relay" from="client" lifetime="persistent" {
+        request "open" description="Declare relay target (wld_id). Subsequent frames are forwarded one-way to {to}, opaque." {
+            field "to" type="string" required=#true     // 宛先 wld_id
+            field "from" type="string"                    // 送信元 wld_id (target へ伝える)
+            returns "Status" {
+                // established (target へ stream 確立) / offline (target 不在 = D3-c) / error。
+                field "status" type="string" required=#true
+                field "detail" type="string"
             }
         }
     }
