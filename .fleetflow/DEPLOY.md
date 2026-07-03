@@ -233,5 +233,5 @@ HUB_CERT=hub-cert.der HUB_ADDR=hub.chronista.club:12879 \
 
 ### 注意
 - live = 実データ・実 auth（Creo ID JWKS）。scratch のように捨てられない。
-- **federation auth** は当面 `permissive`（VP が `connect_with_credential` で Creo ID JWT を出すまで）。VP 追従後に `CHRONISTA_HUB_FEDERATION_AUTH=required` へ。
+- **federation auth = `required`（2026-07-04 反転済み）**。未認証は Register/Discover/relay すべて拒否。接続には `VP_OIDC_AUDIENCE=https://hub.chronista.club` 付きの `vp auth login` が必須。stale 掃除は `examples/registry_gc.rs`（owner guard 準拠の手動 Unregister）。
 - **full 疎通**（world A → world B の direct/relay dial）は **VP dialer + hub S4 relay** 待ち。本 deploy は register/discover/auth/cert を実ネットで先行検証する段（**公開 IPv4 到達 + cert pin path を 2026-06-28 実証済**。world↔world の IPv6 GUA direct は worlds 側）。
