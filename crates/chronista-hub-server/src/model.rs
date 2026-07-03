@@ -20,6 +20,11 @@ pub struct Resource {
     pub r#type: String,
     pub path: String,
     pub handle: String,
+    /// 所有者 usr_id (EntId、 spec `resource-base.owner`)。 None = owner 不明 (legacy /
+    /// 未認証登録)。 書き込み元は principal 由来の federation 経路のみ — ingestion
+    /// (`/v1/events`) には配線しない (app が任意 usr_id を名乗る spoofing 面を開かない)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     pub visibility: Visibility,
     pub payload: serde_json::Value,
     #[serde(rename = "createdAt")]
@@ -199,6 +204,8 @@ fn validate_resource(
             r#type: r#type.unwrap(),
             path: path.unwrap(),
             handle: handle.unwrap(),
+            // ingestion 経路では owner を受け付けない (federation 経路のみが principal 由来で設定)
+            owner: None,
             visibility: visibility.unwrap(),
             payload,
             created_at: created_at.unwrap(),

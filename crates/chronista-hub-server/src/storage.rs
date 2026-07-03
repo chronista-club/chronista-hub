@@ -24,6 +24,9 @@ struct ResourceRow {
     r#type: String,
     path: String,
     handle: String,
+    /// 所有者 usr_id。 旧行には column 自体が無い → serde default で None (migration 不要)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
     visibility: Visibility,
     payload: Value,
     #[serde(rename = "createdAt")]
@@ -39,6 +42,7 @@ impl From<ResourceRow> for Resource {
             r#type: r.r#type,
             path: r.path,
             handle: r.handle,
+            owner: r.owner,
             visibility: r.visibility,
             payload: r.payload,
             created_at: r.created_at,
@@ -54,6 +58,7 @@ impl ResourceRow {
             r#type: r.r#type.clone(),
             path: r.path.clone(),
             handle: r.handle.clone(),
+            owner: r.owner.clone(),
             visibility: r.visibility,
             payload: r.payload.clone(),
             created_at: r.created_at.clone(),
@@ -189,6 +194,8 @@ impl Storage {
     /// (location 独立 routing key、 ADR-020 §S2/D2 — handle 改名・衝突で番地が壊れない)。
     /// wld_id 無し (旧 client) は handle に fallback。 handle は display 属性、 endpoints は
     /// direct 到達候補 (`["[GUA]:port"]`) として payload 保持 (hub は opaque に扱う)。
+    /// owner = 登録 principal の usr_id (ADR-020 §S5 — None は未認証 permissive 登録)、
+    /// visibility は Discover の見せ方を決める (`list_worlds_visible_to` が対)。
     /// createdAt/updatedAt は DB 側 `time::now()` を string cast。 registered_at を返す。
     /// Unison `worlds.Register` の backing。 tree read (`/v1/tree/@handle`) にも即現れる。
     pub async fn register_world(
@@ -197,6 +204,8 @@ impl Storage {
         handle: &str,
         name: &str,
         endpoints: &[String],
+        owner: Option<&str>,
+        visibility: Visibility,
     ) -> anyhow::Result<String> {
         let rid = match wld_id {
             Some(w) => format!("vp-world:{w}"),
@@ -207,7 +216,8 @@ impl Storage {
             .query(
                 "UPSERT type::record('hub_resource', $rid) CONTENT {
                     rid: $rid, type: 'vp-world', path: '/', handle: $handle,
-                    visibility: 'public',
+                    owner: $owner,
+                    visibility: $visibility,
                     payload: { name: $name, wld_id: $wld_id, endpoints: $endpoints },
                     createdAt: <string> time::now(), updatedAt: <string> time::now()
                 };",
@@ -217,6 +227,8 @@ impl Storage {
             .bind(("name", name.to_string()))
             .bind(("wld_id", wld_id.map(str::to_string)))
             .bind(("endpoints", endpoints.to_vec()))
+            .bind(("owner", owner.map(str::to_string)))
+            .bind(("visibility", serde_json::to_value(visibility)?))
             .await?
             .take(0)?;
         let registered_at = rows
@@ -233,20 +245,35 @@ impl Storage {
     /// 構成する (鏡像)。 存在しない rid の DELETE は no-op = idempotent。 `RETURN BEFORE`
     /// で削除前の行を受け、 **削除した entry 数** (0 or 1) を返す。 Unison `worlds.Unregister`
     /// の backing (test entry 掃除 + registry lifecycle、 ADR-020 §S2)。
+    ///
+    /// requester = 削除を求める principal の usr_id (ADR-020 §S5):
+    /// - `Some(u)` → owner が u と一致するか、 owner 無し (legacy/未認証登録) の entry のみ
+    ///   削除できる。 他人の world は消せない (owner mismatch は削除 0 = 存在も漏らさない)。
+    /// - `None` (permissive 未認証) → 従来通り無条件 (段階移行の非破壊、 required 反転で閉じる)。
     pub async fn unregister_world(
         &self,
         wld_id: Option<&str>,
         handle: Option<&str>,
+        requester: Option<&str>,
     ) -> anyhow::Result<usize> {
         let rid = match (wld_id, handle) {
             (Some(w), _) => format!("vp-world:{w}"),
             (None, Some(h)) => format!("vp-world:{h}"),
             (None, None) => anyhow::bail!("wld_id or handle required for unregister"),
         };
+        // owner 無し entry は NONE (column 不在) と NULL (owner: None bind) の両形があり得る。
+        let sql = match requester {
+            Some(_) => {
+                "DELETE type::record('hub_resource', $rid)
+                 WHERE owner = NONE OR owner = NULL OR owner = $requester RETURN BEFORE"
+            }
+            None => "DELETE type::record('hub_resource', $rid) RETURN BEFORE",
+        };
         let removed: Vec<Value> = self
             .db
-            .query("DELETE type::record('hub_resource', $rid) RETURN BEFORE")
+            .query(sql)
             .bind(("rid", rid))
+            .bind(("requester", requester.map(str::to_string)))
             .await?
             .take(0)?;
         Ok(removed.len())
@@ -259,6 +286,39 @@ impl Storage {
             .db
             .query("SELECT * FROM hub_resource WHERE type = $rtype ORDER BY createdAt")
             .bind(("rtype", rtype.to_string()))
+            .await?
+            .take(0)?;
+        rows_to_resources(rows)
+    }
+
+    /// viewer に見える vp-world を列挙する (Discover の backing、 ADR-020 §S5)。
+    ///
+    /// - `Some(usr_id)` → 自分が owner の world + `public` な world。
+    /// - `None` (未認証 permissive) → `public` のみ。
+    ///
+    /// legacy 行 (owner 無し) は register 時に `public` 固定だったため public 側に落ちて
+    /// 従来通り見える (非破壊)。 `shared` は audience/group モデル導入までどちらにも
+    /// 現れない (owner 本人を除く)。
+    pub async fn list_worlds_visible_to(
+        &self,
+        viewer: Option<&str>,
+    ) -> anyhow::Result<Vec<Resource>> {
+        let sql = match viewer {
+            Some(_) => {
+                "SELECT * FROM hub_resource
+                 WHERE type = 'vp-world' AND (visibility = 'public' OR owner = $viewer)
+                 ORDER BY createdAt"
+            }
+            None => {
+                "SELECT * FROM hub_resource
+                 WHERE type = 'vp-world' AND visibility = 'public'
+                 ORDER BY createdAt"
+            }
+        };
+        let rows: Vec<Value> = self
+            .db
+            .query(sql)
+            .bind(("viewer", viewer.map(str::to_string)))
             .await?
             .take(0)?;
         rows_to_resources(rows)
