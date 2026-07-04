@@ -62,7 +62,9 @@ async fn main() -> Result<()> {
 
     let ch: UnisonChannel = client.open_channel("worlds").await?;
     for wld_id in &wld_ids {
-        let res: Value = ch.request("Unregister", &json!({ "wld_id": wld_id })).await?;
+        let res: Value = ch
+            .request("Unregister", &json!({ "wld_id": wld_id }))
+            .await?;
         // handler は Err を {"error": "..."} の正常 reply に変換して返す — 見逃さない。
         if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
             println!("✗ Unregister {wld_id} → error: {err}");
@@ -91,7 +93,9 @@ async fn main() -> Result<()> {
                 "  - {} (wld_id={}, registered_at={})",
                 w.get("handle").and_then(|v| v.as_str()).unwrap_or("?"),
                 w.get("wld_id").and_then(|v| v.as_str()).unwrap_or("?"),
-                w.get("registered_at").and_then(|v| v.as_str()).unwrap_or("?"),
+                w.get("registered_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?"),
             );
         }
     }
