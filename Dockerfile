@@ -23,8 +23,12 @@ COPY . .
 # ⚠️ 低 RAM 環境 (例 4GB podman VM) では full 並列で OOM する。 その場合は
 #    `--build-arg CARGO_BUILD_JOBS=1` を渡す (CI=16GB では既定の full 並列で可)。
 ARG CARGO_BUILD_JOBS
+# server 本体 + quic_probe example (QUIC liveness probe、 issue #35) を同一 build で。
+# probe は host の systemd timer から image を entrypoint override で回すので、
+# 別 toolchain を host に置かずに済む。
 RUN CARGO_PROFILE_RELEASE_OPT_LEVEL=2 \
-    cargo build --release ${CARGO_BUILD_JOBS:+--jobs ${CARGO_BUILD_JOBS}} -p chronista-hub-server
+    cargo build --release ${CARGO_BUILD_JOBS:+--jobs ${CARGO_BUILD_JOBS}} \
+    -p chronista-hub-server --bins --example quic_probe
 
 # --- runtime ---------------------------------------------------------------
 # builder と同じ Debian suite (trixie) で glibc 版を揃える。
@@ -36,6 +40,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /build/target/release/chronista-hub-server /usr/local/bin/chronista-hub-server
+# QUIC liveness probe (issue #35)。 host の probe timer が
+# `podman run --entrypoint quic_probe <image>` で経路死を検知する。
+COPY --from=builder /build/target/release/examples/quic_probe /usr/local/bin/quic_probe
 # AUTO_MIGRATE_ENABLED 時に listen 前へ適用する migration 群。
 # MIGRATIONS_DIR default は ./migrations、 WORKDIR /app なので /app/migrations を読む。
 COPY migrations /app/migrations

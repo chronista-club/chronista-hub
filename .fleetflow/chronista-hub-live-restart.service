@@ -1,0 +1,15 @@
+# chronista-hub live: 予防的 restart (passt/QUIC 劣化予防、 issue #35)。
+#
+# rootless podman の UDP port-forward (pasta) が連続稼働で劣化し、 QUIC(12879) の
+# 受付が停止する事象への予防策。 daily で service を restart し passt を作り直す。
+# 恒久検知は quic_probe timer (経路死を実接続で捕捉 → 失敗時 restart) が担う。
+#
+# 配置: ~/.config/systemd/user/chronista-hub-live-restart.service
+# 有効化: systemctl --user daemon-reload && systemctl --user enable --now chronista-hub-live-restart.timer
+[Unit]
+Description=chronista-hub live 予防 restart (passt/QUIC 劣化予防, issue #35)
+After=chronista-hub-live-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user restart chronista-hub-live-server.service
