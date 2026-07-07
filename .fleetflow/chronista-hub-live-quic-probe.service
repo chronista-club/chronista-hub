@@ -16,7 +16,10 @@ OnFailure=chronista-hub-live-restart.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/podman run --rm --network=host --pull=never \
+# podman は linuxbrew。 %h = ~ (=/home/linuxbrew) に展開させ、 /usr/bin の gap を避ける
+# (rootless host は podman を /usr/bin に持たない — restart.service の systemctl は host
+# の /usr/bin なので別)。
+ExecStart=%h/.linuxbrew/bin/podman run --rm --network=host --pull=never \
   --entrypoint quic_probe \
   -e HUB_ADDR=localhost:12879 -e PROBE_TIMEOUT_SECS=10 -e PROBE_RETRIES=3 \
   ghcr.io/chronista-club/chronista-hub-server:latest
