@@ -1,0 +1,16 @@
+# chronista-hub live: QUIC probe の実行スケジュール (issue #35)。
+#
+# 5 分ごとに probe。 起動直後は listener 立ち上げ待ちで 2 分猶予。 probe 内の
+# retry(3) と合わせ、 一過性瞬断では restart せず本物の受付停止のみ回復させる。
+#
+# 配置: ~/.config/systemd/user/chronista-hub-live-quic-probe.timer
+# 有効化: systemctl --user enable --now chronista-hub-live-quic-probe.timer
+[Unit]
+Description=chronista-hub live QUIC probe schedule (issue #35)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

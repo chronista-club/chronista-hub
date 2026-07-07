@@ -231,6 +231,30 @@ HUB_CERT=hub-cert.der HUB_ADDR=hub.chronista.club:12879 \
 > 🧹 `live_probe` は `wld_liveprobe` を register する（live registry に残る無害なテスト entry）。
 > 疎通確認後に掃除する（registry の delete/expire path 整備時にまとめて）。
 
+### QUIC liveness 自動回復（issue #35、2026-07-07）
+
+rootless podman の UDP port-forward（pasta）が連続稼働で劣化し、**QUIC(12879) の受付だけ
+停止**する事象があった（REST は生きたまま = `/health` では検知できない）。2 層で自動回復する:
+
+```bash
+# 全 unit を配置（repo .fleetflow が正、drift 防止）
+scp .fleetflow/chronista-hub-live-restart.{service,timer} \
+    .fleetflow/chronista-hub-live-quic-probe.{service,timer} \
+    linuxbrew@fleet-worker-01:~/.config/systemd/user/
+ssh linuxbrew@fleet-worker-01 'systemctl --user daemon-reload \
+  && systemctl --user enable --now chronista-hub-live-restart.timer \
+  && systemctl --user enable --now chronista-hub-live-quic-probe.timer'
+```
+
+- **検知 + 自動回復（`quic-probe`）**: 5 分ごとに image 同梱の `quic_probe` を
+  `podman run --network=host --entrypoint quic_probe` で回し、`localhost:12879`（pasta 経路）
+  へ実 QUIC 接続。retry 3 回とも失敗 = 受付停止 → `OnFailure` で `restart.service` を呼び
+  passt を作り直す。**probe は image に載る**ので `Dockerfile` 変更後の image 反映が前提。
+- **予防（`restart`）**: 04:00 JST daily で先回り restart（劣化前に passt 再生成）。
+
+手動確認: `podman run --rm --network=host --pull=never --entrypoint quic_probe -e HUB_ADDR=localhost:12879 ghcr.io/chronista-club/chronista-hub-server:latest`（exit 0 = QUIC 生存）。
+`systemctl --user list-timers` で両 timer の次回発火を確認。
+
 ### 注意
 - live = 実データ・実 auth（Creo ID JWKS）。scratch のように捨てられない。
 - **federation auth = `required`（2026-07-04 反転済み）**。未認証は Register/Discover/relay すべて拒否。接続には `VP_OIDC_AUDIENCE=https://hub.chronista.club` 付きの `vp auth login` が必須。stale 掃除は `examples/registry_gc.rs`（owner guard 準拠の手動 Unregister）。
