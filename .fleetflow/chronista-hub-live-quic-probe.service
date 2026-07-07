@@ -1,0 +1,22 @@
+# chronista-hub live: QUIC liveness probe (issue #35)。
+#
+# REST(/health) が映さない QUIC 受付の死を、 image 同梱の quic_probe で publish port
+# (localhost:12879 = pasta 経路) へ実接続して検知する。 exit 1 (= QUIC 死) なら
+# OnFailure で予防 restart service を呼び、 passt を作り直して自動回復する。
+#
+# --network=host で container 内 localhost を host の publish port に一致させ、
+# quic_probe の SkipVerification (loopback 限定) が使える。 --pull=never で probe の
+# たびの pull を防ぐ (hub 本体の Pull=newer とは別、 probe は既存 image で十分)。
+#
+# 配置: ~/.config/systemd/user/chronista-hub-live-quic-probe.service
+[Unit]
+Description=chronista-hub live QUIC liveness probe (issue #35)
+After=chronista-hub-live-server.service
+OnFailure=chronista-hub-live-restart.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman run --rm --network=host --pull=never \
+  --entrypoint quic_probe \
+  -e HUB_ADDR=localhost:12879 -e PROBE_TIMEOUT_SECS=10 -e PROBE_RETRIES=3 \
+  ghcr.io/chronista-club/chronista-hub-server:latest
