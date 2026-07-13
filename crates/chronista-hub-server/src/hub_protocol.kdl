@@ -19,7 +19,11 @@
 // 'shared' は audience/group モデル導入まで予約) を additive 受理。 Discover は
 // 「自分が owner の world + public」のみ返す (未認証 permissive は public のみ)。
 // Unregister は owner guard (他人の world は消せない、 owner 無し legacy entry は掃除可)。
-protocol "chronista-hub" version="0.5.0" {
+// v0.6.0: Discover の per-entry に `connected` (bool) を additive 追加 — relay registry
+// (wld_id → live connection) に居るかの snapshot。 registry 掲載 (durable) と接続生存
+// (transient) は別物で、 「registry に見えるのに relay が offline」を client が事前判別
+// できる (monitoring / sidebar liveness 表示の primitive)。
+protocol "chronista-hub" version="0.6.0" {
     namespace "club.chronista.hub"
 
     // self-description — server が自分の KDL を hash 付きで返す (club-unison 組込)。
@@ -57,9 +61,11 @@ protocol "chronista-hub" version="0.5.0" {
             }
         }
 
-        request "Discover" description="List VP worlds visible to the caller: own worlds + public ones (anonymous callers see public only)." {
-            // worlds[] = { wld_id, handle, name, endpoints[], registered_at, visibility }
-            // (per-entry freeform json)。 見える範囲 = 自分が owner の world + public (§S5)。
+        request "Discover" description="List VP worlds visible to the caller: own worlds + public ones (anonymous callers see public only). Each entry carries `connected` (bool) = whether the world's persistent connection is alive right now (relay reachability)." {
+            // worlds[] = { wld_id, handle, name, endpoints[], registered_at, visibility,
+            // connected } (per-entry freeform json)。 見える範囲 = 自分が owner の world +
+            // public (§S5)。 connected = relay registry の生存 snapshot (v0.6.0) — false は
+            // 「registry には居るが常駐接続が無い = relay は offline を返す」の事前シグナル。
             returns "WorldList" {
                 field "worlds" type="json" required=#true
             }
