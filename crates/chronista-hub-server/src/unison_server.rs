@@ -6,7 +6,8 @@
 //!
 //! channels:
 //! - `unison.discovery` — server 自身の protocol.kdl を hash 付きで返す (enable_discovery、組込)。
-//! - `worlds` — `Register` (vp-world を registry へ upsert) / `Discover` (registry 一覧)。
+//! - `worlds` — `Register` (vp-world を registry へ upsert) / `Discover` (registry 一覧 +
+//!   `connected` liveness、 v0.6.0)。
 //!
 //! MVP scope: 単一 hub 内の相互 discovery。multi-hub federation は ADR-018 (defer)。
 //!
@@ -14,7 +15,7 @@
 //! (main.rs で `rustls::crypto::ring::default_provider().install_default()`)。
 //! quinn と surrealdb/reqwest で provider feature が両立し auto-detect が panic するため。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -151,12 +152,17 @@ pub async fn spawn_unison(
                                 let payload = msg.payload_as_value().unwrap_or_default();
                                 // principal は unison.auth で connection に立つ (未認証なら None)。
                                 let principal = ctx.principal().await;
+                                // liveness snapshot: relay registry に居る wld_id = 今この瞬間
+                                // 常駐接続が生きている world (Discover の `connected` に使う)。
+                                let live_wlds: HashSet<String> =
+                                    relay_registry.read().await.keys().cloned().collect();
                                 let reply = handle_worlds(
                                     &storage,
                                     principal.as_ref(),
                                     auth_required,
                                     &msg.method,
                                     payload,
+                                    &live_wlds,
                                 )
                                 .await
                                 .unwrap_or_else(|e| json!({ "error": e.to_string() }));
@@ -297,12 +303,17 @@ fn parse_visibility(payload: &Value, owner: Option<&str>) -> Result<Visibility> 
 
 /// `worlds` channel の method dispatch。 参加資格 (authorize) → owner/visibility で
 /// 見せ方を絞る二層 gate (ADR-020 §S3 + §S5)。
+///
+/// `live_wlds` = relay registry の wld_id snapshot (v0.6.0)。 Discover が各 entry の
+/// `connected` に使う — registry 掲載 (durable) と接続生存 (transient) は別物で、
+/// 「見えるのに繋がらない」を client が判別できるようにする。
 async fn handle_worlds(
     storage: &Storage,
     principal: Option<&unison::network::Principal>,
     auth_required: bool,
     method: &str,
     payload: Value,
+    live_wlds: &HashSet<String>,
 ) -> Result<Value> {
     match method {
         "Register" => {
@@ -365,13 +376,17 @@ async fn handle_worlds(
             let list: Vec<Value> = worlds
                 .iter()
                 .map(|w| {
+                    let wld_id = w.payload.get("wld_id").and_then(|v| v.as_str());
                     json!({
-                        "wld_id": w.payload.get("wld_id").and_then(|v| v.as_str()),
+                        "wld_id": wld_id,
                         "handle": w.handle,
                         "name": w.payload.get("name").and_then(|v| v.as_str()).unwrap_or(&w.handle),
                         "endpoints": w.payload.get("endpoints").cloned().unwrap_or_else(|| json!([])),
                         "registered_at": w.created_at,
                         "visibility": w.visibility,
+                        // connected = 常駐接続が今生きているか (relay registry 由来、 v0.6.0)。
+                        // wld_id 無し (旧 client 登録) は relay 不能なので常に false。
+                        "connected": wld_id.is_some_and(|id| live_wlds.contains(id)),
                     })
                 })
                 .collect();
@@ -554,6 +569,51 @@ mod tests {
         sync_relay_registry(&registry, &ctx, "Unregister", &unreg, &mut registered).await;
         assert!(!registry.read().await.contains_key("wld_a"));
         assert!(registered.is_empty());
+    }
+
+    /// Discover の `connected` (v0.6.0): relay registry に wld_id が居る entry のみ true。
+    /// registry 掲載 (durable) と接続生存 (transient) の分離 — stale entry / 旧 client
+    /// 登録 (wld_id 無し = relay 不能) は false になる。
+    #[tokio::test]
+    async fn discover_reports_liveness() {
+        let db = crate::db::connect_mem("chronista", "hub-unison-liveness")
+            .await
+            .unwrap();
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../migrations"));
+        crate::db::run_pending_migrations(&db, dir).await.unwrap();
+        let storage = Storage::new(db);
+
+        // live (relay registry に居る) / stale (居ない) / legacy (wld_id 無し) の 3 entry
+        for (wld, handle) in [
+            (Some("wld_live"), "live-world"),
+            (Some("wld_stale"), "stale-world"),
+            (None, "legacy-world"),
+        ] {
+            storage
+                .register_world(wld, handle, handle, &[], None, Visibility::Public)
+                .await
+                .unwrap();
+        }
+
+        let live: HashSet<String> = HashSet::from(["wld_live".to_string()]);
+        let reply = handle_worlds(&storage, None, false, "Discover", json!({}), &live)
+            .await
+            .unwrap();
+        let worlds = reply["worlds"].as_array().unwrap();
+        assert_eq!(worlds.len(), 3);
+        let find = |h: &str| {
+            worlds
+                .iter()
+                .find(|w| w["handle"] == h)
+                .unwrap_or_else(|| panic!("world '{h}' not in Discover reply"))
+        };
+        assert_eq!(find("live-world")["connected"], true);
+        assert_eq!(find("stale-world")["connected"], false);
+        assert_eq!(
+            find("legacy-world")["connected"],
+            false,
+            "wld_id 無し (旧 client) は relay 不能 = 常に false"
+        );
     }
 
     /// relay control frame が JSON payload を正しく載せる (source status / target open 宣言)。
