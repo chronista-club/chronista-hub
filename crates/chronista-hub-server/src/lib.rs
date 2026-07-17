@@ -14,4 +14,6 @@ pub mod storage;
 pub mod unison_server;
 
 pub const SERVICE_NAME: &str = "chronista-hub";
-pub const VERSION: &str = "0.1.0";
+/// 版数は Cargo.toml (workspace.package.version) を単一の真実源とする。
+/// ハードコードすると /health と federation identity が drift するため env! で追従。
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
