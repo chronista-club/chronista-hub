@@ -8,8 +8,11 @@
 # Caddy が Let's Encrypt で両ホストの TLS を自動取得。
 
 # hub service (REST、 container host port 12880 = PublishPort 12880:3000/tcp)
+# upstream は 127.0.0.1 明示 (localhost 不可): podman 5.8 の pasta が publish を
+# v6 でも bind する一方、 container 内 hub は 0.0.0.0:3000 (v4 のみ) listen のため、
+# localhost → ::1 経路は connect 成功後 reset = Caddy 502 になる (2026-07-27 実障害)。
 hub.chronista.club {
-	reverse_proxy localhost:12880
+	reverse_proxy 127.0.0.1:12880
 }
 
 # apex = portal。 canonical は hub.chronista.club/@handle (ADR-019)、 apex は alias。
@@ -18,7 +21,7 @@ chronista.club {
 	# ⚠️ TODO(code): hub は現状 /v1/tree/{handle} のみ。 canonical /@handle public route
 	#    が実装されるまでこの proxy は 404 になる (live code gap #2)。
 	@handle path /@*
-	reverse_proxy @handle localhost:12880
+	reverse_proxy @handle 127.0.0.1:12880
 
 	# portal landing は Caddy が直接出す (別 service 不要)。 暫定は placeholder、
 	# 本番 landing は file_server で静的ファイル or 将来の静的サイトへ差し替え。
