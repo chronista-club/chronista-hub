@@ -1,7 +1,7 @@
 //! Unison 疎通 spike — chronista-hub の dependency graph 内で club-unison
 //! (QUIC + KDL discovery) が compile / round-trip するかを検証する。
 //!
-//! 本実装 (hub に worlds.* channel を載せる) の前に、 Beta 版 (v1.1.0) の地雷を踏む:
+//! 本実装 (hub に nodes.* channel を載せる) の前に、 Beta 版 (v1.1.0) の地雷を踏む:
 //!   - edition 2024 / rust 1.95 で hub 側から build できるか
 //!   - rustls provider 衝突 (reqwest=rustls, surrealdb=aws-lc-rs, unison=quinn+ring) が無いか
 //!   - axum と同じ tokio runtime で QUIC server を同居できるか (spawn_listen)

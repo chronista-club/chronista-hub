@@ -4,7 +4,9 @@
 
 ## 何
 
-Chronista Hub (`chronista.club` 上の新 product) の **World Tree** — identity + stateful resource meta-registry — を KDL で spec 化したもの。 Creo ID / 各 Chronista product (Memories / VP / CPLP / FleetStage / GFP) が共通で参照する single source of truth。
+Chronista Hub (`chronista.club` 上の新 product) の **Node Tree** — identity + stateful resource meta-registry — を KDL で spec 化したもの。 Creo ID / 各 Chronista product (Memories / VP / CPLP / FleetStage / GFP) が共通で参照する single source of truth。
+
+> v0.3 (2026-07-27) で **World Tree → Node Tree** に改名 ([ADR-021](../adr/ADR-021-node-vocabulary-coordinated-migration.md) — VP v0.56.0 の World 3 義分解に協調追随)。 旧 `world-tree.kdl` は tombstone。
 
 ## なぜ KDL
 
@@ -18,7 +20,8 @@ Chronista Hub (`chronista.club` 上の新 product) の **World Tree** — identi
 
 | file | 内容 |
 |---|---|
-| `world-tree.kdl` | meta / path schema / resource shape / sync / auth / products / resource-types / codegen hints |
+| `node-tree.kdl` | meta / path schema / resource shape / sync / auth / products / resource-types / codegen hints |
+| `world-tree.kdl` | tombstone (v0.3 で `node-tree.kdl` へ改名 — immutable ADR からのリンク保全のみ) |
 | `resources/` (将来) | 各 resource-type が成長したら分割先 |
 
 ## 主要決定 (memory 原典: `chronista-hub-ownership.md`)
@@ -26,7 +29,7 @@ Chronista Hub (`chronista.club` 上の新 product) の **World Tree** — identi
 - **brand**: Chronista Hub
 - **domain**: `chronista.club` (Creo ID は `id.creo-memories.in` で auth 専任)
 - **URL path**: `/@{handle}/{product-slug}/{resource-type}/{id}`
-- **reserved slugs**: `identity` / `apps` / `world` / `.well-known`
+- **reserved slugs**: `identity` / `apps` / `node` / `world` (v0.3 以降 legacy 予約) / `.well-known`
 - **ownership model**: index-only (products DB が primary、 Hub は navigation cache)
 - **sync**: event-sourced (products publish events)
 - **spec format**: KDL (schema) + Ruby DSL (Ops、 後 phase)
@@ -38,7 +41,7 @@ Chronista Hub (`chronista.club` 上の新 product) の **World Tree** — identi
 │  chronista.club (Chronista Hub)        │
 │  ├── /@{handle}/                        │
 │  ├── /apps/{app_id}/                    │
-│  ├── /world/                            │
+│  ├── /node/                             │
 │  └── /.well-known/                      │
 └───────┬────────────────┬────────────────┘
         │ JWT verify     │ SDK (register event)

@@ -1,6 +1,6 @@
 # Chronista Hub
 
-World Tree meta-registry for the Chronista ecosystem.
+Node Tree meta-registry for the Chronista ecosystem.
 
 ## 何
 
@@ -8,7 +8,7 @@ World Tree meta-registry for the Chronista ecosystem.
 
 ## Spec
 
-World Tree v0.1 KDL spec — [`docs/spec/world-tree.kdl`](./docs/spec/world-tree.kdl)
+Node Tree v0.3 KDL spec — [`docs/spec/node-tree.kdl`](./docs/spec/node-tree.kdl)（v0.2 まで World Tree、 ADR-021 で node 語彙へ）
 
 詳細は [`docs/spec/README.md`](./docs/spec/README.md) 参照。
 
@@ -19,7 +19,7 @@ World Tree v0.1 KDL spec — [`docs/spec/world-tree.kdl`](./docs/spec/world-tree
 │  chronista.club (Chronista Hub)        │
 │  ├── /@{handle}/                        │
 │  ├── /apps/{app_id}/                    │
-│  ├── /world/                            │
+│  ├── /node/                             │
 │  └── /.well-known/                      │
 └───────┬────────────────┬────────────────┘
         │ JWT verify     │ SDK (register event)
@@ -158,13 +158,13 @@ chronista-hub/
 ├── migrations/                 (SurrealQL schema migration、 codegen-surql 自動生成可能)
 ├── scripts/e2e.sh              (binary e2e: 永続化検証)
 └── docs/
-    ├── spec/                   (KDL spec v0.2 + README)
+    ├── spec/                   (KDL spec v0.3 + README)
     └── adr/                    (ADR-001..016)
 ```
 
 ## Codegen scripts
 
-`docs/spec/world-tree.kdl` を SSOT として 4 言語/層を自動生成:
+`docs/spec/node-tree.kdl` を SSOT として 4 言語/層を自動生成:
 
 ```bash
 bun run gen        # 全 4 target を generated/ に

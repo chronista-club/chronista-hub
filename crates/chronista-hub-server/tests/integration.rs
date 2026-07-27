@@ -161,15 +161,15 @@ async fn storage_crud() {
 }
 
 #[tokio::test]
-async fn world_register_discover_unregister() {
+async fn node_register_discover_unregister() {
     let (storage, _log, _pt) = setup_mem().await;
 
-    // register: wld_id keyed (ADR-020 §S2)。 owner 無し (未認証 permissive) = public。
+    // register: node_id keyed (ADR-020 §S2)。 owner 無し (未認証 permissive) = public。
     let reg_at = storage
-        .register_world(
-            Some("wld_test1"),
-            "test-world",
-            "Test World",
+        .register_node(
+            Some("nd_test1"),
+            "test-node",
+            "Test Node",
             &["[2400:4150::1]:32000".to_string()],
             None,
             Visibility::Public,
@@ -178,22 +178,22 @@ async fn world_register_discover_unregister() {
         .unwrap();
     assert!(!reg_at.is_empty(), "registered_at should be set");
 
-    // discover: vp-world list に wld_id + endpoints 付きで現れる
-    let worlds = storage.list_resources_by_type("vp-world").await.unwrap();
-    assert_eq!(worlds.len(), 1);
-    assert_eq!(worlds[0].handle, "test-world");
-    assert_eq!(worlds[0].payload["wld_id"], "wld_test1");
-    assert_eq!(worlds[0].payload["endpoints"][0], "[2400:4150::1]:32000");
+    // discover: vp-node list に node_id + endpoints 付きで現れる
+    let nodes = storage.list_resources_by_type("vp-node").await.unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].handle, "test-node");
+    assert_eq!(nodes[0].payload["node_id"], "nd_test1");
+    assert_eq!(nodes[0].payload["endpoints"][0], "[2400:4150::1]:32000");
 
-    // unregister by wld_id → entry が消え、削除数 1 を返す
+    // unregister by node_id → entry が消え、削除数 1 を返す
     let removed = storage
-        .unregister_world(Some("wld_test1"), None, None)
+        .unregister_node(Some("nd_test1"), None, None)
         .await
         .unwrap();
     assert_eq!(removed, 1, "one entry removed");
     assert!(
         storage
-            .list_resources_by_type("vp-world")
+            .list_resources_by_type("vp-node")
             .await
             .unwrap()
             .is_empty(),
@@ -202,22 +202,22 @@ async fn world_register_discover_unregister() {
 
     // 冪等: 2 回目は削除対象なし = 0 (no-op、エラーにならない)
     let removed2 = storage
-        .unregister_world(Some("wld_test1"), None, None)
+        .unregister_node(Some("nd_test1"), None, None)
         .await
         .unwrap();
     assert_eq!(removed2, 0, "idempotent: nothing to remove");
 }
 
-/// owner/visibility 分離 (ADR-020 §S5): Discover は「自分の world + public」だけを
-/// 返し、 他人の private world は存在ごと見えない。 Unregister は owner guard。
+/// owner/visibility 分離 (ADR-020 §S5): Discover は「自分の node + public」だけを
+/// 返し、 他人の private node は存在ごと見えない。 Unregister は owner guard。
 #[tokio::test]
-async fn world_owner_visibility_isolation() {
+async fn node_owner_visibility_isolation() {
     let (storage, _log, _pt) = setup_mem().await;
 
-    // user A: private world (認証済み登録の default)
+    // user A: private node (認証済み登録の default)
     storage
-        .register_world(
-            Some("wld_a_priv"),
+        .register_node(
+            Some("nd_a_priv"),
             "a-private",
             "A Private",
             &[],
@@ -226,10 +226,10 @@ async fn world_owner_visibility_isolation() {
         )
         .await
         .unwrap();
-    // user A: public world (明示 opt-in)
+    // user A: public node (明示 opt-in)
     storage
-        .register_world(
-            Some("wld_a_pub"),
+        .register_node(
+            Some("nd_a_pub"),
             "a-public",
             "A Public",
             &[],
@@ -238,10 +238,10 @@ async fn world_owner_visibility_isolation() {
         )
         .await
         .unwrap();
-    // user B: private world
+    // user B: private node
     storage
-        .register_world(
-            Some("wld_b_priv"),
+        .register_node(
+            Some("nd_b_priv"),
             "b-private",
             "B Private",
             &[],
@@ -252,8 +252,8 @@ async fn world_owner_visibility_isolation() {
         .unwrap();
     // legacy 行相当: owner 無し + public (旧 client の permissive 登録)
     storage
-        .register_world(
-            Some("wld_legacy"),
+        .register_node(
+            Some("nd_legacy"),
             "legacy",
             "Legacy",
             &[],
@@ -264,57 +264,49 @@ async fn world_owner_visibility_isolation() {
         .unwrap();
 
     // A の視界 = 自分の private + 自分の public + legacy public (B の private は見えない)
-    let seen_by_a = storage.list_worlds_visible_to(Some("usr_a")).await.unwrap();
+    let seen_by_a = storage.list_nodes_visible_to(Some("usr_a")).await.unwrap();
     let ids_a: Vec<&str> = seen_by_a.iter().map(|w| w.id.as_str()).collect();
     assert_eq!(
         ids_a,
-        vec![
-            "vp-world:wld_a_priv",
-            "vp-world:wld_a_pub",
-            "vp-world:wld_legacy"
-        ],
-        "A sees own worlds + public only"
+        vec!["vp-node:nd_a_priv", "vp-node:nd_a_pub", "vp-node:nd_legacy"],
+        "A sees own nodes + public only"
     );
 
     // B の視界 = 自分の private + A の public + legacy (A の private は見えない)
-    let seen_by_b = storage.list_worlds_visible_to(Some("usr_b")).await.unwrap();
+    let seen_by_b = storage.list_nodes_visible_to(Some("usr_b")).await.unwrap();
     let ids_b: Vec<&str> = seen_by_b.iter().map(|w| w.id.as_str()).collect();
     assert_eq!(
         ids_b,
-        vec![
-            "vp-world:wld_a_pub",
-            "vp-world:wld_b_priv",
-            "vp-world:wld_legacy"
-        ],
-        "B sees own worlds + public only"
+        vec!["vp-node:nd_a_pub", "vp-node:nd_b_priv", "vp-node:nd_legacy"],
+        "B sees own nodes + public only"
     );
 
     // 未認証 (viewer None) = public のみ
-    let seen_anon = storage.list_worlds_visible_to(None).await.unwrap();
+    let seen_anon = storage.list_nodes_visible_to(None).await.unwrap();
     let ids_anon: Vec<&str> = seen_anon.iter().map(|w| w.id.as_str()).collect();
     assert_eq!(
         ids_anon,
-        vec!["vp-world:wld_a_pub", "vp-world:wld_legacy"],
+        vec!["vp-node:nd_a_pub", "vp-node:nd_legacy"],
         "anonymous sees public only"
     );
 
-    // Unregister owner guard: B は A の world を消せない (存在も漏らさず removed=0)
+    // Unregister owner guard: B は A の node を消せない (存在も漏らさず removed=0)
     let removed = storage
-        .unregister_world(Some("wld_a_priv"), None, Some("usr_b"))
+        .unregister_node(Some("nd_a_priv"), None, Some("usr_b"))
         .await
         .unwrap();
-    assert_eq!(removed, 0, "B cannot remove A's world");
+    assert_eq!(removed, 0, "B cannot remove A's node");
 
     // 本人は消せる
     let removed = storage
-        .unregister_world(Some("wld_a_priv"), None, Some("usr_a"))
+        .unregister_node(Some("nd_a_priv"), None, Some("usr_a"))
         .await
         .unwrap();
-    assert_eq!(removed, 1, "owner can remove own world");
+    assert_eq!(removed, 1, "owner can remove own node");
 
     // owner 無し legacy entry は認証済み user からも掃除できる (stale entry 掃除の経路)
     let removed = storage
-        .unregister_world(Some("wld_legacy"), None, Some("usr_b"))
+        .unregister_node(Some("nd_legacy"), None, Some("usr_b"))
         .await
         .unwrap();
     assert_eq!(
@@ -323,16 +315,16 @@ async fn world_owner_visibility_isolation() {
     );
 }
 
-/// write-side owner guard (ADR-020 §S5): 他人の wld_id を Register で乗っ取れない
-/// (owner/endpoints/visibility の上書き防止)。 未認証・App も owned world を消せない。
+/// write-side owner guard (ADR-020 §S5): 他人の node_id を Register で乗っ取れない
+/// (owner/endpoints/visibility の上書き防止)。 未認証・App も owned node を消せない。
 #[tokio::test]
-async fn world_register_hijack_and_delete_guards() {
+async fn node_register_hijack_and_delete_guards() {
     let (storage, _log, _pt) = setup_mem().await;
 
-    // A が private world を owner 登録
+    // A が private node を owner 登録
     storage
-        .register_world(
-            Some("wld_x"),
+        .register_node(
+            Some("nd_x"),
             "x",
             "X",
             &["[2400:4150::1]:32000".to_string()],
@@ -342,10 +334,10 @@ async fn world_register_hijack_and_delete_guards() {
         .await
         .unwrap();
 
-    // B が同じ wld_id で乗っ取ろうとする → Err (書き込まれない)
+    // B が同じ node_id で乗っ取ろうとする → Err (書き込まれない)
     let hijack = storage
-        .register_world(
-            Some("wld_x"),
+        .register_node(
+            Some("nd_x"),
             "x-evil",
             "X Evil",
             &["[dead:beef::1]:1".to_string()],
@@ -353,12 +345,12 @@ async fn world_register_hijack_and_delete_guards() {
             Visibility::Public,
         )
         .await;
-    assert!(hijack.is_err(), "B cannot hijack A's wld_id via Register");
+    assert!(hijack.is_err(), "B cannot hijack A's node_id via Register");
 
     // 未認証 (owner None) も乗っ取れない
     let hijack_anon = storage
-        .register_world(
-            Some("wld_x"),
+        .register_node(
+            Some("nd_x"),
             "x-anon",
             "X Anon",
             &["[dead:beef::2]:2".to_string()],
@@ -368,20 +360,20 @@ async fn world_register_hijack_and_delete_guards() {
         .await;
     assert!(
         hijack_anon.is_err(),
-        "anonymous cannot hijack A's owned wld_id"
+        "anonymous cannot hijack A's owned node_id"
     );
 
     // A の entry は無傷 (owner/endpoints/visibility そのまま)
-    let worlds = storage.list_resources_by_type("vp-world").await.unwrap();
-    assert_eq!(worlds.len(), 1);
-    assert_eq!(worlds[0].owner.as_deref(), Some("usr_a"));
-    assert_eq!(worlds[0].visibility, Visibility::Private);
-    assert_eq!(worlds[0].payload["endpoints"][0], "[2400:4150::1]:32000");
+    let nodes = storage.list_resources_by_type("vp-node").await.unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].owner.as_deref(), Some("usr_a"));
+    assert_eq!(nodes[0].visibility, Visibility::Private);
+    assert_eq!(nodes[0].payload["endpoints"][0], "[2400:4150::1]:32000");
 
-    // 本人は自分の world を再 Register で更新できる (owner 一致)
+    // 本人は自分の node を再 Register で更新できる (owner 一致)
     storage
-        .register_world(
-            Some("wld_x"),
+        .register_node(
+            Some("nd_x"),
             "x",
             "X",
             &["[2400:4150::1]:33000".to_string()],
@@ -390,25 +382,25 @@ async fn world_register_hijack_and_delete_guards() {
         )
         .await
         .unwrap();
-    let worlds = storage.list_resources_by_type("vp-world").await.unwrap();
+    let nodes = storage.list_resources_by_type("vp-node").await.unwrap();
     assert_eq!(
-        worlds[0].visibility,
+        nodes[0].visibility,
         Visibility::Public,
         "owner self-update ok"
     );
-    assert_eq!(worlds[0].payload["endpoints"][0], "[2400:4150::1]:33000");
+    assert_eq!(nodes[0].payload["endpoints"][0], "[2400:4150::1]:33000");
 
-    // 未認証 (requester None) は A の owned world を消せない (§S5、 permissive path guard)
+    // 未認証 (requester None) は A の owned node を消せない (§S5、 permissive path guard)
     let removed = storage
-        .unregister_world(Some("wld_x"), None, None)
+        .unregister_node(Some("nd_x"), None, None)
         .await
         .unwrap();
-    assert_eq!(removed, 0, "anonymous cannot delete an owned world");
+    assert_eq!(removed, 0, "anonymous cannot delete an owned node");
 
     // owner 無し entry を追加 → 未認証でも掃除できる (stale 掃除経路は維持)
     storage
-        .register_world(
-            Some("wld_free"),
+        .register_node(
+            Some("nd_free"),
             "free",
             "Free",
             &[],
@@ -418,24 +410,24 @@ async fn world_register_hijack_and_delete_guards() {
         .await
         .unwrap();
     let removed = storage
-        .unregister_world(Some("wld_free"), None, None)
+        .unregister_node(Some("nd_free"), None, None)
         .await
         .unwrap();
     assert_eq!(removed, 1, "anonymous can still clean ownerless entries");
 }
 
-/// REST 迂回防止 (ADR-020 §S5、 VP_WORLD_REST_GUARD): 未認証 REST read
-/// (`/v1/tree/@handle`・`/v1/resources/{id}` の backing) から vp-world の非 public を
-/// 隠す。 product resource (type != vp-world) は private でも従来通り読める (guard 非対象)。
+/// REST 迂回防止 (ADR-020 §S5、 VP_NODE_REST_GUARD): 未認証 REST read
+/// (`/v1/tree/@handle`・`/v1/resources/{id}` の backing) から vp-node の非 public を
+/// 隠す。 product resource (type != vp-node) は private でも従来通り読める (guard 非対象)。
 #[tokio::test]
-async fn rest_read_hides_nonpublic_vp_worlds() {
+async fn rest_read_hides_nonpublic_vp_nodes() {
     let (storage, _log, _pt) = setup_mem().await;
     let opts = TreeReadOptions::default();
 
-    // 同じ handle の下に public / private の vp-world + private の product resource
+    // 同じ handle の下に public / private の vp-node + private の product resource
     storage
-        .register_world(
-            Some("wld_pub"),
+        .register_node(
+            Some("nd_pub"),
             "alice",
             "Alice Public",
             &["[2400:4150::1]:32000".to_string()],
@@ -445,8 +437,8 @@ async fn rest_read_hides_nonpublic_vp_worlds() {
         .await
         .unwrap();
     storage
-        .register_world(
-            Some("wld_priv"),
+        .register_node(
+            Some("nd_priv"),
             "alice",
             "Alice Private",
             &["[2400:4150::9]:32000".to_string()],
@@ -463,16 +455,16 @@ async fn rest_read_hides_nonpublic_vp_worlds() {
         .await
         .unwrap();
 
-    // tree read (handle): private vp-world だけ落ち、 product は private でも残る
+    // tree read (handle): private vp-node だけ落ち、 product は private でも残る
     let tree = storage
         .get_resources_by_handle("alice", &opts)
         .await
         .unwrap();
     let ids: Vec<&str> = tree.iter().map(|r| r.id.as_str()).collect();
-    assert!(ids.contains(&"vp-world:wld_pub"), "public world visible");
+    assert!(ids.contains(&"vp-node:nd_pub"), "public node visible");
     assert!(
-        !ids.contains(&"vp-world:wld_priv"),
-        "private world hidden from REST tree"
+        !ids.contains(&"vp-node:nd_priv"),
+        "private node hidden from REST tree"
     );
     assert!(ids.contains(&"atlas_p"), "private product unaffected");
 
@@ -482,26 +474,26 @@ async fn rest_read_hides_nonpublic_vp_worlds() {
         .await
         .unwrap();
     assert!(
-        !by_path.iter().any(|r| r.id == "vp-world:wld_priv"),
-        "private world hidden from path read"
+        !by_path.iter().any(|r| r.id == "vp-node:nd_priv"),
+        "private node hidden from path read"
     );
 
-    // 直接 id read: private vp-world は存在ごと見えない、 public / product は読める
+    // 直接 id read: private vp-node は存在ごと見えない、 public / product は読める
     assert!(
         storage
-            .get_resource_by_id("vp-world:wld_priv")
+            .get_resource_by_id("vp-node:nd_priv")
             .await
             .unwrap()
             .is_none(),
-        "private world hidden by id"
+        "private node hidden by id"
     );
     assert!(
         storage
-            .get_resource_by_id("vp-world:wld_pub")
+            .get_resource_by_id("vp-node:nd_pub")
             .await
             .unwrap()
             .is_some(),
-        "public world readable by id"
+        "public node readable by id"
     );
     assert!(
         storage

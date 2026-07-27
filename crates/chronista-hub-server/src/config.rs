@@ -9,14 +9,14 @@ pub struct Config {
     pub db_path: String,
     pub auto_migrate: bool,
     pub migrations_dir: String,
-    /// Unison (QUIC) surface の listen address (world registry/discovery channel)。
+    /// Unison (QUIC) surface の listen address (node registry/discovery channel)。
     pub unison_addr: String,
     /// Unison surface の TLS cert source (ADR-020 §S1)。
     pub unison_cert: UnisonCert,
     /// self-signed mode で生成 cert DER を書き出すパス (非 loopback client が
     /// `TrustAnchors::Custom` に pin する用)。 None なら書き出さない。
     pub unison_cert_out: Option<String>,
-    /// federation discovery (worlds channel) の auth 強制 (ADR-020 §S3)。
+    /// federation discovery (nodes channel) の auth 強制 (ADR-020 §S3)。
     /// `CHRONISTA_HUB_FEDERATION_AUTH=required` で true。 default false = permissive
     /// (credential 提示なしも許容、 提示時のみ scope 検証 → 現 client を壊さず段階移行)。
     pub federation_auth_required: bool,
