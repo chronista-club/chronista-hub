@@ -6,6 +6,31 @@
 
 (none)
 
+## [0.3.0] — 2026-07-27
+
+VP v0.56.0 命名エピック（PR #939 — World の 3 義分解: daemon / @machine / node）への協調追随（[ADR-021](../adr/ADR-021-node-vocabulary-coordinated-migration.md)）。 federation identity の語彙を world → node へ。 pre-1.0 minor-breaking 枠（ADR-011 / G10 allowance）。
+
+### Changed（breaking — resource-type-rename / field-rename）
+
+- **spec file 名**: `world-tree.kdl` → **`node-tree.kdl`**（旧 path は tombstone として残置 — immutable ADR からの被リンク保全、 ADR-021 裁定 3）
+- **`meta.title`**: "Chronista Hub — World Tree" → "Chronista Hub — Node Tree"
+- **resource-type `vp-world`** → **`vp-node`**
+- **`vp-node.slug`**: `vp/worlds/{world_id}` → `vp/nodes/{node_id}`
+- **`vp-node.payload.world_id`** → **`node_id`**（EntId prefix も `wld_` → `nd_`、 ADR-021 裁定 2 — issuer は VP 側）
+- **`vp-actor.payload.world_id`** → **`node_id`**（vp-node への FK）
+- **`user.subtree`**: `child "vp/worlds"` → `child "vp/nodes"`
+- **product `vp` の scope**: `events.publish.vp-world` / `events.delete.vp-world` → `events.publish.vp-node` / `events.delete.vp-node`（発行済み token に旧 scope は焼かれていないことを実測確認済 — ADR-021 §1）
+
+### Added
+
+- **`reserved-path-slug "node"`** — `"world"` の予約も継続（解放すると handle path に取られるため、 ADR-021 裁定 4）
+- archive snapshot: `docs/spec/archive/world-tree-v0.2.kdl`（immutable preservation）
+- migration guide: `docs/spec/migrations/0.2-to-0.3.md`
+
+### 対象外（明示）
+
+- `vp-actor.stand` の JoJo enum — VP #945 Stand 解体への追随は後継語彙が role 毎に異なるため別 migration（node 移行の範囲外）
+
 ## [0.2.0] — 2026-04-25
 
 Phase 1 着手前の self-review (gap G1-G14) を踏まえた enrichment。 spec の約束を明示化、 silent skip 排除、 Phase 1-3 scope 整理。

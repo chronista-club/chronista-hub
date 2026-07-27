@@ -78,8 +78,8 @@ systemctl --user status chronista-hub-scratch-server.service --no-pager
 curl -fsS https://hub.scratch.chronista.club/health        # → {"status":"ok",...}
 # Unison federation (VP 側): daemon に env set + 再起動
 #   CHRONISTA_HUB_ADDR=hub.scratch.chronista.club:12779
-# → 実 world が register/discover、REST tree にも出る:
-curl -fsS https://hub.scratch.chronista.club/v1/tree/<world-handle>
+# → 実 node が register/discover、REST tree にも出る:
+curl -fsS https://hub.scratch.chronista.club/v1/tree/<node-handle>
 ```
 
 ### ログ / 運用
@@ -120,15 +120,15 @@ live は subdomain prefix 省略。config skeleton は揃っているが、**dep
 
 | 用途 | 状態 |
 |---|---|
-| **live federation**（VP ↔ hub）| ✅ **cert gap 解消**（ADR-020 §S1 で CertSource 配線、`.env.live` の `CHRONISTA_HUB_CERT_MODE`）。register/discover/auth/wld_id/endpoints（S2/S3）も code 済。✅ **2026-06-28 公開越し疎通実証済**（self-signed + pin）。残るは **cert 永続化 = 実 CA cert 発行（DNS-01、Step 1）→ file mode 切替**（VP は System trust = pin 不要に） |
+| **live federation**（VP ↔ hub）| ✅ **cert gap 解消**（ADR-020 §S1 で CertSource 配線、`.env.live` の `CHRONISTA_HUB_CERT_MODE`）。register/discover/auth/node_id/endpoints（S2/S3）も code 済。✅ **2026-06-28 公開越し疎通実証済**（self-signed + pin）。残るは **cert 永続化 = 実 CA cert 発行（DNS-01、Step 1）→ file mode 切替**（VP は System trust = pin 不要に） |
 | **live public-web**（`chronista.club/@handle`）| #2 hub の `/@handle` public route が未（federation とは独立した別トラック）|
 
 → live **federation** の安定運用に残るのは **op 設定（実 CA cert 発行 + file mode 切替、Step 1）** のみ。
 
 ### 接続の principal = IPv6 GUA（ADR-020 D3 / council 2026-06-28）
-tailnet 依存は外した。federation の direct data-path は **IPv6 GUA**（overlay 不要、cross-internet 直結）。**ただし IPv6 GUA principal は world↔world direct の話** — worlds が自身の GUA を advertise（S2 で hub が交換）し peer 同士が直結する。**hub の住所ではない**: hub は discovery/relay の合流点で、worlds が到達できれば IPv4 で足りる。direct 全滅時は hub relay（S4、未実装）。
+tailnet 依存は外した。federation の direct data-path は **IPv6 GUA**（overlay 不要、cross-internet 直結）。**ただし IPv6 GUA principal は node↔node direct の話** — nodes が自身の GUA を advertise（S2 で hub が交換）し peer 同士が直結する。**hub の住所ではない**: hub は discovery/relay の合流点で、nodes が到達できれば IPv4 で足りる。direct 全滅時は hub relay（S4、未実装）。
 
-> **🟢 デプロイ決定（2026-06-28, mito）= hub は IPv4 で立てる**。fleet-worker-01 は Sakura 共有セグメント＝**IPv4-only**（`163.43.117.17`、IPv6 GUA 無し。usacloud で確認済）。world 間は IPv6 GUA direct で動くので **hub は IPv4 で OK**（world 的には IPv6 で federation する）。現行 DNS は **`A hub.chronista.club → 163.43.117.17`** のみ（AAAA 不要）。hub 自身の IPv6 化（Sakura router+switch ~¥2-3k/月 / Fly.io）は IPv6-only peer 完全対応が要る時の **将来 option**（worlds 無改修で差し替え可）。
+> **🟢 デプロイ決定（2026-06-28, mito）= hub は IPv4 で立てる**。fleet-worker-01 は Sakura 共有セグメント＝**IPv4-only**（`163.43.117.17`、IPv6 GUA 無し。usacloud で確認済）。node 間は IPv6 GUA direct で動くので **hub は IPv4 で OK**（node 的には IPv6 で federation する）。現行 DNS は **`A hub.chronista.club → 163.43.117.17`** のみ（AAAA 不要）。hub 自身の IPv6 化（Sakura router+switch ~¥2-3k/月 / Fly.io）は IPv6-only peer 完全対応が要る時の **将来 option**（nodes 無改修で差し替え可）。
 
 ### Step 0（現行 IPv4）. DNS + 到達性
 ```bash
@@ -218,7 +218,7 @@ echo | openssl s_client -connect hub.chronista.club:443 2>/dev/null | openssl x5
 HUB_ADDR=hub.chronista.club:12879 \
   cargo run -p chronista-hub-server --example live_probe
 #   → ✓ QUIC connect (System trust) / ✓ Register / ✓ Discover
-# VP 実 world: daemon に CHRONISTA_HUB_ADDR=hub.chronista.club:12879 のみ（cert 配布も pin も不要）
+# VP 実 node: daemon に CHRONISTA_HUB_ADDR=hub.chronista.club:12879 のみ（cert 配布も pin も不要）
 ```
 
 **self-signed fallback 期（cert 未発行）= Custom pin**:
@@ -228,7 +228,7 @@ HUB_CERT=hub-cert.der HUB_ADDR=hub.chronista.club:12879 \
   cargo run -p chronista-hub-server --example live_probe   # → ✓ (cert pin)
 ```
 
-> 🧹 `live_probe` は `wld_liveprobe` を register する（live registry に残る無害なテスト entry）。
+> 🧹 `live_probe` は `nd_liveprobe` を register する（live registry に残る無害なテスト entry）。
 > 疎通確認後に掃除する（registry の delete/expire path 整備時にまとめて）。
 
 ### QUIC liveness 自動回復（issue #35、2026-07-07）
@@ -258,4 +258,4 @@ ssh linuxbrew@fleet-worker-01 'systemctl --user daemon-reload \
 ### 注意
 - live = 実データ・実 auth（Creo ID JWKS）。scratch のように捨てられない。
 - **federation auth = `required`（2026-07-04 反転済み）**。未認証は Register/Discover/relay すべて拒否。接続には `VP_OIDC_AUDIENCE=https://hub.chronista.club` 付きの `vp auth login` が必須。stale 掃除は `examples/registry_gc.rs`（owner guard 準拠の手動 Unregister）。
-- **full 疎通**（world A → world B の direct/relay dial）は **VP dialer + hub S4 relay** 待ち。本 deploy は register/discover/auth/cert を実ネットで先行検証する段（**公開 IPv4 到達 + cert pin path を 2026-06-28 実証済**。world↔world の IPv6 GUA direct は worlds 側）。
+- **full 疎通**（node A → node B の direct/relay dial）は **VP dialer + hub S4 relay** 待ち。本 deploy は register/discover/auth/cert を実ネットで先行検証する段（**公開 IPv4 到達 + cert pin path を 2026-06-28 実証済**。node↔node の IPv6 GUA direct は nodes 側）。

@@ -1,12 +1,12 @@
-//! Unison (QUIC) surface — world registry / discovery channel。
+//! Unison (QUIC) surface — node registry / discovery channel。
 //!
 //! REST (axum) と **同一 tokio runtime** で動く薄い層 (`spawn_listen`)。
 //! resource ingestion (`/v1/events`) と tree read (`/v1/tree`) は REST 据え置きで、
-//! ここでは「world が自分を登録 / 互いを発見する」discovery だけを Unison channel で提供する。
+//! ここでは「node が自分を登録 / 互いを発見する」discovery だけを Unison channel で提供する。
 //!
 //! channels:
 //! - `unison.discovery` — server 自身の protocol.kdl を hash 付きで返す (enable_discovery、組込)。
-//! - `worlds` — `Register` (vp-world を registry へ upsert) / `Discover` (registry 一覧 +
+//! - `nodes` — `Register` (vp-node を registry へ upsert) / `Discover` (registry 一覧 +
 //!   `connected` liveness、 v0.6.0)。
 //!
 //! MVP scope: 単一 hub 内の相互 discovery。multi-hub federation は ADR-018 (defer)。
@@ -33,12 +33,12 @@ use crate::config::UnisonCert;
 use crate::model::Visibility;
 use crate::storage::Storage;
 
-/// hub の Unison protocol schema (channels: unison.discovery + worlds + relay)。
+/// hub の Unison protocol schema (channels: unison.discovery + nodes + relay)。
 const HUB_PROTOCOL_KDL: &str = include_str!("hub_protocol.kdl");
 
-/// relay 用 transient registry: `wld_id → 当該 world の connection ctx` (ADR-020 §S4 / D1)。
+/// relay 用 transient registry: `node_id → 当該 node の connection ctx` (ADR-020 §S4 / D1)。
 ///
-/// **durable 0 = D1**: connection ごとに `worlds.Register` で挿入、 connection close で除去。
+/// **durable 0 = D1**: connection ごとに `nodes.Register` で挿入、 connection close で除去。
 /// substrate (club-unison) には connection lookup を持ち込まず、 hub が application で保持する
 /// (剃刀 — `design/server-initiated-stream.md` §7)。 値の `ctx` は server 側で `conn` が
 /// set 済みなので `ctx.open_server_stream(...)` で target へ reliable stream を開ける。
@@ -57,7 +57,7 @@ fn relay_status(status: &str, detail: &str) -> ProtocolMessage {
     })
 }
 
-/// target への open 宣言 frame (`{from}` = 送信元 wld_id)。
+/// target への open 宣言 frame (`{from}` = 送信元 node_id)。
 fn relay_open(from: &str) -> ProtocolMessage {
     ProtocolMessage::new_with_json(
         0,
@@ -70,8 +70,8 @@ fn relay_open(from: &str) -> ProtocolMessage {
     })
 }
 
-/// `worlds.Register`/`Unregister` の結果を relay registry へ反映する (wld_id keyed、 D1 transient)。
-/// `registered` は当該 connection が登録した wld_id 群 (close 時の cleanup 用)。
+/// `nodes.Register`/`Unregister` の結果を relay registry へ反映する (node_id keyed、 D1 transient)。
+/// `registered` は当該 connection が登録した node_id 群 (close 時の cleanup 用)。
 async fn sync_relay_registry(
     registry: &RelayRegistry,
     ctx: &Arc<ConnectionContext>,
@@ -79,8 +79,8 @@ async fn sync_relay_registry(
     reply: &Value,
     registered: &mut Vec<String>,
 ) {
-    let wld = reply.get("wld_id").and_then(|v| v.as_str());
-    match (method, wld) {
+    let node = reply.get("node_id").and_then(|v| v.as_str());
+    match (method, node) {
         ("Register", Some(w)) => {
             registry
                 .write()
@@ -130,7 +130,7 @@ pub async fn spawn_unison(
             .await;
     }
 
-    // relay registry (ADR-020 §S4): worlds.Register で wld_id → ctx を transient 登録し、
+    // relay registry (ADR-020 §S4): nodes.Register で node_id → ctx を transient 登録し、
     // relay channel が target ctx を引いて open_server_stream する。 hub の application state (D1)。
     let relay_registry: RelayRegistry = Arc::new(RwLock::new(HashMap::new()));
 
@@ -138,13 +138,13 @@ pub async fn spawn_unison(
         let storage = storage.clone();
         let relay_registry = relay_registry.clone();
         server
-            .register_channel("worlds", move |ctx, stream| {
+            .register_channel("nodes", move |ctx, stream| {
                 // register_channel は Fn (接続毎に呼ばれる) なので、 毎回 clone する。
                 let storage = storage.clone();
                 let relay_registry = relay_registry.clone();
                 async move {
                     let channel = UnisonChannel::new(stream);
-                    // この connection が登録した wld_id (close 時に registry から除去 = D1)。
+                    // この connection が登録した node_id (close 時に registry から除去 = D1)。
                     let mut registered: Vec<String> = Vec::new();
                     let result = loop {
                         match channel.recv().await {
@@ -152,21 +152,21 @@ pub async fn spawn_unison(
                                 let payload = msg.payload_as_value().unwrap_or_default();
                                 // principal は unison.auth で connection に立つ (未認証なら None)。
                                 let principal = ctx.principal().await;
-                                // liveness snapshot: relay registry に居る wld_id = 今この瞬間
-                                // 常駐接続が生きている world (Discover の `connected` に使う)。
-                                let live_wlds: HashSet<String> =
+                                // liveness snapshot: relay registry に居る node_id = 今この瞬間
+                                // 常駐接続が生きている node (Discover の `connected` に使う)。
+                                let live_nodes: HashSet<String> =
                                     relay_registry.read().await.keys().cloned().collect();
-                                let reply = handle_worlds(
+                                let reply = handle_nodes(
                                     &storage,
                                     principal.as_ref(),
                                     auth_required,
                                     &msg.method,
                                     payload,
-                                    &live_wlds,
+                                    &live_nodes,
                                 )
                                 .await
                                 .unwrap_or_else(|e| json!({ "error": e.to_string() }));
-                                // relay registry を Register/Unregister に追従 (wld_id → ctx)。
+                                // relay registry を Register/Unregister に追従 (node_id → ctx)。
                                 sync_relay_registry(
                                     &relay_registry,
                                     &ctx,
@@ -188,7 +188,7 @@ pub async fn spawn_unison(
                             Err(e) => break Err(e),
                         }
                     };
-                    // cleanup: connection が消えたら登録 wld_id を registry から除去 (transient = D1)。
+                    // cleanup: connection が消えたら登録 node_id を registry から除去 (transient = D1)。
                     if !registered.is_empty() {
                         let mut reg = relay_registry.write().await;
                         for w in &registered {
@@ -217,7 +217,7 @@ pub async fn spawn_unison(
 
     let cert_source = build_cert_source(cert, cert_out.as_deref())?;
     let handle = server.spawn_listen_with_cert(addr, cert_source).await?;
-    tracing::info!(%addr, "Unison surface listening (channels: unison.discovery, worlds, relay)");
+    tracing::info!(%addr, "Unison surface listening (channels: unison.discovery, nodes, relay)");
     Ok(handle)
 }
 
@@ -301,19 +301,19 @@ fn parse_visibility(payload: &Value, owner: Option<&str>) -> Result<Visibility> 
     }
 }
 
-/// `worlds` channel の method dispatch。 参加資格 (authorize) → owner/visibility で
+/// `nodes` channel の method dispatch。 参加資格 (authorize) → owner/visibility で
 /// 見せ方を絞る二層 gate (ADR-020 §S3 + §S5)。
 ///
-/// `live_wlds` = relay registry の wld_id snapshot (v0.6.0)。 Discover が各 entry の
+/// `live_nodes` = relay registry の node_id snapshot (v0.6.0)。 Discover が各 entry の
 /// `connected` に使う — registry 掲載 (durable) と接続生存 (transient) は別物で、
 /// 「見えるのに繋がらない」を client が判別できるようにする。
-async fn handle_worlds(
+async fn handle_nodes(
     storage: &Storage,
     principal: Option<&unison::network::Principal>,
     auth_required: bool,
     method: &str,
     payload: Value,
-    live_wlds: &HashSet<String>,
+    live_nodes: &HashSet<String>,
 ) -> Result<Value> {
     match method {
         "Register" => {
@@ -326,9 +326,9 @@ async fn handle_worlds(
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or(handle);
-            // wld_id (location 独立 routing key) / endpoints (direct 到達候補) は additive、
+            // node_id (location 独立 routing key) / endpoints (direct 到達候補) は additive、
             // 旧 client は省略 → None / 空配列で後方互換 (ADR-020 §S2)。
-            let wld_id = payload.get("wld_id").and_then(|v| v.as_str());
+            let node_id = payload.get("node_id").and_then(|v| v.as_str());
             let endpoints: Vec<String> = payload
                 .get("endpoints")
                 .and_then(|v| v.as_array())
@@ -343,8 +343,8 @@ async fn handle_worlds(
             let owner = principal_usr_id(principal);
             let visibility = parse_visibility(&payload, owner.as_deref())?;
             let registered_at = storage
-                .register_world(
-                    wld_id,
+                .register_node(
+                    node_id,
                     handle,
                     name,
                     &endpoints,
@@ -354,14 +354,14 @@ async fn handle_worlds(
                 .await?;
             tracing::info!(
                 handle,
-                ?wld_id,
+                ?node_id,
                 ?owner,
                 ?visibility,
                 endpoint_count = endpoints.len(),
-                "world registered via Unison"
+                "node registered via Unison"
             );
             Ok(json!({
-                "wld_id": wld_id,
+                "node_id": node_id,
                 "handle": handle,
                 "registered_at": registered_at,
                 "endpoints": endpoints,
@@ -370,51 +370,51 @@ async fn handle_worlds(
         }
         "Discover" => {
             authorize_federation(principal, "federation.read", auth_required)?;
-            // 見える範囲 = 自分が owner の world + public (未認証は public のみ、 §S5)。
+            // 見える範囲 = 自分が owner の node + public (未認証は public のみ、 §S5)。
             let viewer = principal_usr_id(principal);
-            let worlds = storage.list_worlds_visible_to(viewer.as_deref()).await?;
-            let list: Vec<Value> = worlds
+            let nodes = storage.list_nodes_visible_to(viewer.as_deref()).await?;
+            let list: Vec<Value> = nodes
                 .iter()
                 .map(|w| {
-                    let wld_id = w.payload.get("wld_id").and_then(|v| v.as_str());
+                    let node_id = w.payload.get("node_id").and_then(|v| v.as_str());
                     json!({
-                        "wld_id": wld_id,
+                        "node_id": node_id,
                         "handle": w.handle,
                         "name": w.payload.get("name").and_then(|v| v.as_str()).unwrap_or(&w.handle),
                         "endpoints": w.payload.get("endpoints").cloned().unwrap_or_else(|| json!([])),
                         "registered_at": w.created_at,
                         "visibility": w.visibility,
                         // connected = 常駐接続が今生きているか (relay registry 由来、 v0.6.0)。
-                        // wld_id 無し (旧 client 登録) は relay 不能なので常に false。
-                        "connected": wld_id.is_some_and(|id| live_wlds.contains(id)),
+                        // node_id 無し (旧 client 登録) は relay 不能なので常に false。
+                        "connected": node_id.is_some_and(|id| live_nodes.contains(id)),
                     })
                 })
                 .collect();
-            Ok(json!({ "worlds": list }))
+            Ok(json!({ "nodes": list }))
         }
         "Unregister" => {
             // deregister は自身の登録の撤回 = Register と同じ scope で gate (ADR-020 §S3)。
             authorize_federation(principal, "federation.register", auth_required)?;
-            // wld_id (推奨) か handle のどちらかで対象を指す。 register_world と同じ rid 解決。
-            let wld_id = payload.get("wld_id").and_then(|v| v.as_str());
+            // node_id (推奨) か handle のどちらかで対象を指す。 register_node と同じ rid 解決。
+            let node_id = payload.get("node_id").and_then(|v| v.as_str());
             let handle = payload.get("handle").and_then(|v| v.as_str());
-            if wld_id.is_none() && handle.is_none() {
-                return Err(anyhow::anyhow!("field 'wld_id' or 'handle' required"));
+            if node_id.is_none() && handle.is_none() {
+                return Err(anyhow::anyhow!("field 'node_id' or 'handle' required"));
             }
-            // requester = principal の usr_id。 他人の world は消せない (§S5、 storage 側 guard)。
+            // requester = principal の usr_id。 他人の node は消せない (§S5、 storage 側 guard)。
             let requester = principal_usr_id(principal);
             let removed = storage
-                .unregister_world(wld_id, handle, requester.as_deref())
+                .unregister_node(node_id, handle, requester.as_deref())
                 .await?;
-            tracing::info!(?wld_id, ?handle, removed, "world unregistered via Unison");
+            tracing::info!(?node_id, ?handle, removed, "node unregistered via Unison");
             Ok(json!({
-                "wld_id": wld_id,
+                "node_id": node_id,
                 "handle": handle,
                 "removed": removed,
             }))
         }
         other => Err(anyhow::anyhow!(
-            "unknown method '{other}' on channel 'worlds'"
+            "unknown method '{other}' on channel 'nodes'"
         )),
     }
 }
@@ -464,7 +464,8 @@ fn authorize_federation(
 /// `open_server_stream` で reliable な server-initiated stream を開き、 source → target を
 /// **片方向に dumb forward** する (payload は opaque = D5、 hub は中身を覗かない)。 双方向は
 /// B→A を B が relay することで創発 (D5「片方向 tell の交換」)。 target offline は D3-c
-/// (hub は貯めず source に offline を返す → 送り手 home-World が reconcile)。
+/// (hub は貯めず source に offline を返す → 送り手側 daemon (ADR-020 D3-c の home-World、
+/// 現語彙で home node の daemon) が reconcile)。
 async fn handle_relay(
     registry: &RelayRegistry,
     ctx: &Arc<ConnectionContext>,
@@ -537,7 +538,7 @@ mod tests {
     use super::*;
     use unison::network::context::ConnectionContext;
 
-    /// relay registry の lifecycle: Register で wld_id→ctx 挿入 / wld_id 無しは skip /
+    /// relay registry の lifecycle: Register で node_id→ctx 挿入 / node_id 無しは skip /
     /// Unregister で除去 / connection 追跡 (registered) が一致する (ADR-020 §S4 / D1)。
     #[tokio::test]
     async fn relay_registry_register_skip_unregister() {
@@ -545,35 +546,35 @@ mod tests {
         let ctx = Arc::new(ConnectionContext::new());
         let mut registered: Vec<String> = Vec::new();
 
-        // Register (wld_id 有) → 挿入 + 追跡
-        let reply = json!({ "wld_id": "wld_a", "handle": "a", "registered_at": "t" });
+        // Register (node_id 有) → 挿入 + 追跡
+        let reply = json!({ "node_id": "nd_a", "handle": "a", "registered_at": "t" });
         sync_relay_registry(&registry, &ctx, "Register", &reply, &mut registered).await;
-        assert!(registry.read().await.contains_key("wld_a"));
-        assert_eq!(registered, vec!["wld_a".to_string()]);
+        assert!(registry.read().await.contains_key("nd_a"));
+        assert_eq!(registered, vec!["nd_a".to_string()]);
 
-        // Register (wld_id 無し = 旧 client) → 挿入しない
-        let reply_nowld = json!({ "wld_id": null, "handle": "b" });
-        sync_relay_registry(&registry, &ctx, "Register", &reply_nowld, &mut registered).await;
+        // Register (node_id 無し = 旧 client) → 挿入しない
+        let reply_no_node = json!({ "node_id": null, "handle": "b" });
+        sync_relay_registry(&registry, &ctx, "Register", &reply_no_node, &mut registered).await;
         assert_eq!(
             registry.read().await.len(),
             1,
-            "wld_id 無しは registry に入らない"
+            "node_id 無しは registry に入らない"
         );
 
-        // 同 wld_id 再 Register → 追跡は重複しない
+        // 同 node_id 再 Register → 追跡は重複しない
         sync_relay_registry(&registry, &ctx, "Register", &reply, &mut registered).await;
-        assert_eq!(registered.len(), 1, "registered は wld_id 重複しない");
+        assert_eq!(registered.len(), 1, "registered は node_id 重複しない");
 
         // Unregister → 除去 + 追跡から外れる
-        let unreg = json!({ "wld_id": "wld_a", "removed": 1 });
+        let unreg = json!({ "node_id": "nd_a", "removed": 1 });
         sync_relay_registry(&registry, &ctx, "Unregister", &unreg, &mut registered).await;
-        assert!(!registry.read().await.contains_key("wld_a"));
+        assert!(!registry.read().await.contains_key("nd_a"));
         assert!(registered.is_empty());
     }
 
-    /// Discover の `connected` (v0.6.0): relay registry に wld_id が居る entry のみ true。
+    /// Discover の `connected` (v0.6.0): relay registry に node_id が居る entry のみ true。
     /// registry 掲載 (durable) と接続生存 (transient) の分離 — stale entry / 旧 client
-    /// 登録 (wld_id 無し = relay 不能) は false になる。
+    /// 登録 (node_id 無し = relay 不能) は false になる。
     #[tokio::test]
     async fn discover_reports_liveness() {
         let db = crate::db::connect_mem("chronista", "hub-unison-liveness")
@@ -583,50 +584,50 @@ mod tests {
         crate::db::run_pending_migrations(&db, dir).await.unwrap();
         let storage = Storage::new(db);
 
-        // live (relay registry に居る) / stale (居ない) / legacy (wld_id 無し) の 3 entry
-        for (wld, handle) in [
-            (Some("wld_live"), "live-world"),
-            (Some("wld_stale"), "stale-world"),
-            (None, "legacy-world"),
+        // live (relay registry に居る) / stale (居ない) / legacy (node_id 無し) の 3 entry
+        for (node_id, handle) in [
+            (Some("nd_live"), "live-node"),
+            (Some("nd_stale"), "stale-node"),
+            (None, "legacy-node"),
         ] {
             storage
-                .register_world(wld, handle, handle, &[], None, Visibility::Public)
+                .register_node(node_id, handle, handle, &[], None, Visibility::Public)
                 .await
                 .unwrap();
         }
 
-        let live: HashSet<String> = HashSet::from(["wld_live".to_string()]);
-        let reply = handle_worlds(&storage, None, false, "Discover", json!({}), &live)
+        let live: HashSet<String> = HashSet::from(["nd_live".to_string()]);
+        let reply = handle_nodes(&storage, None, false, "Discover", json!({}), &live)
             .await
             .unwrap();
-        let worlds = reply["worlds"].as_array().unwrap();
-        assert_eq!(worlds.len(), 3);
+        let nodes = reply["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 3);
         let find = |h: &str| {
-            worlds
+            nodes
                 .iter()
                 .find(|w| w["handle"] == h)
-                .unwrap_or_else(|| panic!("world '{h}' not in Discover reply"))
+                .unwrap_or_else(|| panic!("node '{h}' not in Discover reply"))
         };
-        assert_eq!(find("live-world")["connected"], true);
-        assert_eq!(find("stale-world")["connected"], false);
+        assert_eq!(find("live-node")["connected"], true);
+        assert_eq!(find("stale-node")["connected"], false);
         assert_eq!(
-            find("legacy-world")["connected"],
+            find("legacy-node")["connected"],
             false,
-            "wld_id 無し (旧 client) は relay 不能 = 常に false"
+            "node_id 無し (旧 client) は relay 不能 = 常に false"
         );
     }
 
     /// relay control frame が JSON payload を正しく載せる (source status / target open 宣言)。
     #[tokio::test]
     async fn relay_control_frames() {
-        let st = relay_status("established", "wld_b");
+        let st = relay_status("established", "nd_b");
         let v = st.payload_as_value().unwrap();
         assert_eq!(v["status"], "established");
-        assert_eq!(v["detail"], "wld_b");
+        assert_eq!(v["detail"], "nd_b");
 
-        let op = relay_open("wld_a");
+        let op = relay_open("nd_a");
         let v = op.payload_as_value().unwrap();
-        assert_eq!(v["from"], "wld_a");
+        assert_eq!(v["from"], "nd_a");
     }
 
     fn user_principal(user_id: &str, scopes: Vec<String>) -> unison::network::Principal {

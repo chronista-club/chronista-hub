@@ -59,12 +59,12 @@ async fn main() -> Result<()> {
     client.connect(&addr).await?;
     println!("✓ QUIC connect OK (TLS handshake 成立 = server cert を信頼)");
 
-    let ch: UnisonChannel = client.open_channel("worlds").await?;
+    let ch: UnisonChannel = client.open_channel("nodes").await?;
     let reg: Value = ch
         .request(
             "Register",
             &json!({
-                "wld_id": "wld_liveprobe",
+                "node_id": "nd_liveprobe",
                 "handle": "live-probe",
                 "name": "Live Probe",
                 "endpoints": ["[2400:4150:0:1::1]:32000"]

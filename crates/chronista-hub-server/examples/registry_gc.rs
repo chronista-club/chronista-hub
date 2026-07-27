@@ -1,4 +1,4 @@
-//! registry_gc — 公開 hub の stale vp-world entry を Unregister で掃除する (throwaway)。
+//! registry_gc — 公開 hub の stale vp-node entry を Unregister で掃除する (throwaway)。
 //!
 //! DEPLOY.md の「registry の delete/expire path」の手動版。owner guard (ADR-020 §S5) が
 //! そのまま効く: 未認証だと owner-less entry しか消えず、認証すると自分の entry も消せる。
@@ -7,14 +7,14 @@
 //! 使い方:
 //!
 //!     # owner-less (permissive 時代の legacy) を無認証で掃除
-//!     WLD_IDS=wld_a,wld_b HUB_ADDR=hub.chronista.club:12879 \
+//!     NODE_IDS=nd_a,nd_b HUB_ADDR=hub.chronista.club:12879 \
 //!       cargo run -p chronista-hub-server --example registry_gc
 //!
 //!     # 自分の entry も掃除 (HUB_TOKEN_FILE = raw JWT を置いたファイル)
-//!     WLD_IDS=wld_c HUB_TOKEN_FILE=/path/to/token \
+//!     NODE_IDS=nd_c HUB_TOKEN_FILE=/path/to/token \
 //!       cargo run -p chronista-hub-server --example registry_gc
 //!
-//! 最後に Discover を打ち、この principal から見える残存 world 一覧を出す (掃除後検証)。
+//! 最後に Discover を打ち、この principal から見える残存 node 一覧を出す (掃除後検証)。
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
         .ok();
 
     let addr = std::env::var("HUB_ADDR").unwrap_or_else(|_| "hub.chronista.club:12879".into());
-    let wld_ids: Vec<String> = std::env::var("WLD_IDS")
+    let node_ids: Vec<String> = std::env::var("NODE_IDS")
         .map(|s| {
             s.split(',')
                 .map(|w| w.trim().to_string())
@@ -37,8 +37,8 @@ async fn main() -> Result<()> {
                 .collect()
         })
         .unwrap_or_default();
-    if wld_ids.is_empty() {
-        anyhow::bail!("WLD_IDS (comma 区切り) を指定してください");
+    if node_ids.is_empty() {
+        anyhow::bail!("NODE_IDS (comma 区切り) を指定してください");
     }
 
     let quic = QuicClient::builder()
@@ -60,19 +60,19 @@ async fn main() -> Result<()> {
         }
     }
 
-    let ch: UnisonChannel = client.open_channel("worlds").await?;
-    for wld_id in &wld_ids {
+    let ch: UnisonChannel = client.open_channel("nodes").await?;
+    for node_id in &node_ids {
         let res: Value = ch
-            .request("Unregister", &json!({ "wld_id": wld_id }))
+            .request("Unregister", &json!({ "node_id": node_id }))
             .await?;
         // handler は Err を {"error": "..."} の正常 reply に変換して返す — 見逃さない。
         if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
-            println!("✗ Unregister {wld_id} → error: {err}");
+            println!("✗ Unregister {node_id} → error: {err}");
             continue;
         }
         let removed = res.get("removed").and_then(|v| v.as_u64()).unwrap_or(0);
         let mark = if removed > 0 { "🧹" } else { "–" };
-        println!("{mark} Unregister {wld_id} → removed={removed}");
+        println!("{mark} Unregister {node_id} → removed={removed}");
     }
 
     let disc: Value = ch.request("Discover", &json!({})).await?;
@@ -82,17 +82,17 @@ async fn main() -> Result<()> {
         client.disconnect().await?;
         return Ok(());
     }
-    let worlds = disc.get("worlds").and_then(|v| v.as_array());
+    let nodes = disc.get("nodes").and_then(|v| v.as_array());
     println!(
-        "\n残存 world ({} 件、この principal から見える範囲):",
-        worlds.map(|w| w.len()).unwrap_or(0)
+        "\n残存 node ({} 件、この principal から見える範囲):",
+        nodes.map(|w| w.len()).unwrap_or(0)
     );
-    if let Some(list) = worlds {
+    if let Some(list) = nodes {
         for w in list {
             println!(
-                "  - {} (wld_id={}, registered_at={})",
+                "  - {} (node_id={}, registered_at={})",
                 w.get("handle").and_then(|v| v.as_str()).unwrap_or("?"),
-                w.get("wld_id").and_then(|v| v.as_str()).unwrap_or("?"),
+                w.get("node_id").and_then(|v| v.as_str()).unwrap_or("?"),
                 w.get("registered_at")
                     .and_then(|v| v.as_str())
                     .unwrap_or("?"),
