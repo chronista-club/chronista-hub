@@ -35,9 +35,11 @@ VP は「local DB を初期化して終わり」で通せた（doc 54 §8.1「le
 
 ---
 
-## §0 前提条件（2026-07-27 時点で赤）— deploy 経路の健全性
+## §0 前提条件 — deploy 経路の健全性（**2026-07-27 復旧済み — 経緯を保存**）
 
-本移行は最終的に **hub の再 deploy** を要する。その経路が今、健全でない可能性がある。調査中に観測した事実のみ列挙する:
+> **RESOLVED 2026-07-27**: 真因 = **2026-07-03 の Caddyfile 全上書き incident の巻き添えで、fleet-worker-01 の `/etc/caddy/Caddyfile` から `hub.chronista.club` site block が消失**していた（edge Caddy は cert を引けず alert 80。QUIC 12879 は Caddy 非経由の直 listener なので federation は無傷 = silent outage）。修理 = backup → 正典 block（`.fleetflow/Caddyfile.live`）を **merge 追記**（全上書き禁止の原則どおり）+ SSOT ヘッダのテナント一覧に hub を追加 → `systemctl reload caddy` → TLS-ALPN-01 で cert 即時再取得（Let's Encrypt YE2、〜2026-10-25）→ `GET /health` 200 確認。apex `chronista.club` block は DNS が Cloudflare 向きのため未取込（取込むと HTTP-01 が失敗し続ける）。残置 follow-up: ① linuxbrew user の野良 `caddy run` ×3（5/25・7/12・7/13 起動、:443 未保持 = 無害だが要掃除）② host 側 Caddyfile の正典 repo（`Caddyfile.host`）にも hub block を反映しないと次の全上書きで再発する。
+
+以下は調査時（復旧前）の観測記録:
 
 | 観測 | 結果 |
 |---|---|
@@ -61,7 +63,7 @@ VP は「local DB を初期化して終わり」で通せた（doc 54 §8.1「le
 
 triage 手順:
 1. ~~`live_probe` を実行 → QUIC 面の生死を確定~~ → ✅ **済（2026-07-27）**: register を書かない read-only probe（`unison_ping` + `unison_discover`）で代替し、QUIC 面の生存と schema 配信を確認。「**REST/Caddy のみの障害**」と切り分け完了
-2. **（残）** fleet-worker-01 の Caddy を見る — `Caddyfile.live` の site block 有無、Caddy の cert storage、`caddy reload` のログ。federation は生きているので、この修理は W2 flag day と独立に実施できる
+2. ~~fleet-worker-01 の Caddy を見る~~ → ✅ **済（2026-07-27）**: `/etc/caddy/Caddyfile` に hub の site block が**存在しない**ことを確認（root caddy の cert storage にも chronista 系 cert 無し = alert 80 と完全整合）。merge 追記 + reload で復旧（冒頭 RESOLVED 参照）
 3. ~~過去の類型（`federation-token-outage-2026-07`）と同じパターンかを確認~~ → ✅ **否定（2026-07-27）**: あれは application 層（token 失効、QUIC 接続は確立して沈黙）、今回は transport 層（TLS handshake 不成立）。層も故障箇所も別
 
 ---
@@ -223,7 +225,7 @@ grep 実測で、次は **実装に存在しない**（spec 紙面のみ）:
 
 | # | phase | 内容 | 前提 | 状態 |
 |---|---|---|---|---|
-| **P0** | 復旧 | §0 の TLS 切り分け → deploy 経路の健全化 | — | 未（P4 のみを gate） |
+| **P0** | 復旧 | §0 の TLS 切り分け → deploy 経路の健全化 | — | ✅ 2026-07-27（真因 = 7/3 incident で Caddy site block 消失。merge 追記 + reload で復旧、`/health` 200） |
 | **P1** | 裁定 | §3 の W1/W2/W3 + §2.1 の prefix (a)/(b) + spec file 名の可否 | — | ✅ 2026-07-27（§P1） |
 | **P2** | 紙 | 本 ADR を Accepted 化 / spec `world-tree.kdl` → `node-tree.kdl` 改訂 + CHANGELOG（ADR-011 の SemVer 判定 → pre-1.0 minor-breaking 枠、 spec 0.3.0） | P1 | ✅ 2026-07-27 |
 | **P3** | 実装 | hub PR — 層 A（W2 = 旧名互換なし一斉切替、 protocol 0.7.0）+ B + C。C は §2.1 の窓が開いているうちに | P2 | ✅ 2026-07-27 |
