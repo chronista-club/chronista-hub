@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
         spawn_jwks_refresh(jwks, cfg.auth.jwks_url.clone(), cfg.auth.jwks_refresh_secs);
     }
 
-    // Unison (QUIC) surface — world registry/discovery channel。 axum と同一 tokio runtime。
+    // Unison (QUIC) surface — node registry/discovery channel。 axum と同一 tokio runtime。
     // federation auth (ADR-020 §S3) は verifier を policy 注入する (mechanism = club-unison
     // の unison.auth channel)。 handle を drop すると shutdown するので生存期間 hold (`_unison`)。
     let _unison = chronista_hub_server::unison_server::spawn_unison(

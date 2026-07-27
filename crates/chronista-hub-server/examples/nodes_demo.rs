@@ -1,12 +1,12 @@
-//! worlds_demo — 単一 hub 内で 2 つの VP world が相互 discovery する e2e demo (client 側)。
+//! nodes_demo — 単一 hub 内で 2 つの VP node が相互 discovery する e2e demo (client 側)。
 //!
 //! 起動済みの hub (Unison surface = `[::1]:7879`、 REST = `:3000`) に対して:
-//!   1. world-a / world-b をそれぞれ別 client で `worlds.Register`
-//!   2. world-b client が `worlds.Discover` → 両 world を発見 (= 相互 discovery)
-//!   3. (cross-transport) Unison で登録した world が REST `/v1/tree/@world-a` にも現れる
+//!   1. node-a / node-b をそれぞれ別 client で `nodes.Register`
+//!   2. node-b client が `nodes.Discover` → 両 node を発見 (= 相互 discovery)
+//!   3. (cross-transport) Unison で登録した node が REST `/v1/tree/@node-a` にも現れる
 //!
 //! 実行 (hub を別ターミナルで起動した状態で):
-//!   cargo run -p chronista-hub-server --example worlds_demo
+//!   cargo run -p chronista-hub-server --example nodes_demo
 //!
 //! env: `HUB_UNISON_ADDR` (default `[::1]:7879`)
 
@@ -28,7 +28,7 @@ async fn connect(client: &ProtocolClient, addr: &str, cred: Option<&[u8]>) -> Re
 
 async fn register(
     addr: &str,
-    wld_id: &str,
+    node_id: &str,
     handle: &str,
     name: &str,
     endpoints: &[&str],
@@ -36,11 +36,11 @@ async fn register(
 ) -> Result<Value> {
     let client = ProtocolClient::new_default()?;
     connect(&client, addr, cred).await?;
-    let ch: UnisonChannel = client.open_channel("worlds").await?;
+    let ch: UnisonChannel = client.open_channel("nodes").await?;
     let resp: Value = ch
         .request(
             "Register",
-            &json!({ "wld_id": wld_id, "handle": handle, "name": name, "endpoints": endpoints }),
+            &json!({ "node_id": node_id, "handle": handle, "name": name, "endpoints": endpoints }),
         )
         .await?;
     ch.close().await?;
@@ -51,12 +51,12 @@ async fn register(
 async fn discover(addr: &str, cred: Option<&[u8]>) -> Result<Vec<Value>> {
     let client = ProtocolClient::new_default()?;
     connect(&client, addr, cred).await?;
-    let ch: UnisonChannel = client.open_channel("worlds").await?;
+    let ch: UnisonChannel = client.open_channel("nodes").await?;
     let resp: Value = ch.request("Discover", &json!({})).await?;
     ch.close().await?;
     client.disconnect().await?;
     Ok(resp
-        .get("worlds")
+        .get("nodes")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default())
@@ -77,58 +77,58 @@ async fn main() -> Result<()> {
         if cred.is_some() { "credential" } else { "none" }
     );
 
-    // 1) 2 world を register (wld_id = location 独立 routing key、 endpoints = direct 候補)
+    // 1) 2 node を register (node_id = location 独立 routing key、 endpoints = direct 候補)
     let a = register(
         &addr,
-        "wld_demoA",
-        "world-a",
-        "World A",
+        "nd_demoA",
+        "node-a",
+        "Node A",
         &["[::1]:32000"],
         cred,
     )
     .await?;
-    println!("✓ world-a registered: {a}");
+    println!("✓ node-a registered: {a}");
     let b = register(
         &addr,
-        "wld_demoB",
-        "world-b",
-        "World B",
+        "nd_demoB",
+        "node-b",
+        "Node B",
         &["[::1]:32001"],
         cred,
     )
     .await?;
-    println!("✓ world-b registered: {b}");
+    println!("✓ node-b registered: {b}");
 
-    // 2) world-b 視点で discover → 両方見えるはず (相互 discovery)
-    let worlds = discover(&addr, cred).await?;
-    let handles: Vec<&str> = worlds
+    // 2) node-b 視点で discover → 両方見えるはず (相互 discovery)
+    let nodes = discover(&addr, cred).await?;
+    let handles: Vec<&str> = nodes
         .iter()
         .filter_map(|w| w.get("handle").and_then(|v| v.as_str()))
         .collect();
     println!("\n✓ discover → {handles:?}");
-    if !handles.contains(&"world-a") || !handles.contains(&"world-b") {
-        bail!("mutual discovery FAILED — expected both world-a and world-b, got {handles:?}");
+    if !handles.contains(&"node-a") || !handles.contains(&"node-b") {
+        bail!("mutual discovery FAILED — expected both node-a and node-b, got {handles:?}");
     }
-    println!("✅ 相互 discovery OK — world-b は world-a を (そして自身も) hub 経由で発見した");
+    println!("✅ 相互 discovery OK — node-b は node-a を (そして自身も) hub 経由で発見した");
 
-    // 2b) S2: wld_id + endpoints が registry に index され Discover で round-trip するか
-    let wld_a = worlds
+    // 2b) S2: node_id + endpoints が registry に index され Discover で round-trip するか
+    let nd_a = nodes
         .iter()
-        .find(|w| w.get("handle").and_then(|v| v.as_str()) == Some("world-a"));
-    let wld_id_ok =
-        wld_a.and_then(|w| w.get("wld_id").and_then(|v| v.as_str())) == Some("wld_demoA");
-    let ep_ok = wld_a
+        .find(|w| w.get("handle").and_then(|v| v.as_str()) == Some("node-a"));
+    let node_id_ok =
+        nd_a.and_then(|w| w.get("node_id").and_then(|v| v.as_str())) == Some("nd_demoA");
+    let ep_ok = nd_a
         .and_then(|w| w.get("endpoints").and_then(|v| v.as_array()))
         .map(|eps| eps.iter().any(|e| e.as_str() == Some("[::1]:32000")))
         .unwrap_or(false);
-    println!("✓ wld_id round-trip: {wld_id_ok} / endpoints round-trip: {ep_ok}");
-    if !wld_id_ok || !ep_ok {
-        bail!("S2 FAILED — wld_id/endpoints が Discover で復元されない (world-a={wld_a:?})");
+    println!("✓ node_id round-trip: {node_id_ok} / endpoints round-trip: {ep_ok}");
+    if !node_id_ok || !ep_ok {
+        bail!("S2 FAILED — node_id/endpoints が Discover で復元されない (node-a={nd_a:?})");
     }
-    println!("✅ S2 OK — wld_id + endpoints が registry に index され Discover で返った");
+    println!("✅ S2 OK — node_id + endpoints が registry に index され Discover で返った");
 
     // 3) cross-transport: Unison で登録 → REST tree read に現れる
-    let rest = reqwest::get("http://localhost:3000/v1/tree/world-a")
+    let rest = reqwest::get("http://localhost:3000/v1/tree/node-a")
         .await
         .ok();
     if let Some(resp) = rest {
@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
             .map(|a| a.len())
             .unwrap_or(0);
         println!(
-            "\n✓ cross-transport: REST GET /v1/tree/world-a → {n} resource(s): {}",
+            "\n✓ cross-transport: REST GET /v1/tree/node-a → {n} resource(s): {}",
             serde_json::to_string(&body).unwrap_or_default()
         );
     } else {

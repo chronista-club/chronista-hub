@@ -1,4 +1,4 @@
-//! World Tree の中核型。 TS 参照実装 (`storage.ts` / `event-log.ts`) と JSON 互換。
+//! Node Tree の中核型。 TS 参照実装 (`storage.ts` / `event-log.ts`) と JSON 互換。
 //!
 //! API / event の JSON field 名は camelCase (`createdAt` 等) を維持する。
 
@@ -12,7 +12,7 @@ pub enum Visibility {
     Private,
 }
 
-/// World Tree 上の 1 resource。 hub_resource table と 1:1 (record id とは別に `rid` を持つ)。
+/// Node Tree 上の 1 resource。 hub_resource table と 1:1 (record id とは別に `rid` を持つ)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resource {
     pub id: String,

@@ -1,4 +1,4 @@
-//! Chronista Hub server — World Tree meta-registry (axum + embedded SurrealDB)。
+//! Chronista Hub server — Node Tree meta-registry (axum + embedded SurrealDB)。
 //!
 //! ADR-016: 低レイテンシのため Rust + in-process embedded SurrealDB (kv-rocksdb)。
 

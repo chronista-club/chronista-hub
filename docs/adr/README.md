@@ -62,3 +62,4 @@ ADR は spec ↔ memory の橋。 spec を読んで "なぜ?" と思ったら AD
 | [ADR-018](./ADR-018-world-hub-discovery-transport-unison.md) | world↔hub discovery transport — Unison (QUIC) over REST | Accepted | 2026-06-16 | #13, #12, ADR-014/016 |
 | [ADR-019](./ADR-019-host-naming-apex-portal-canonical.md) | Host 命名 + apex portal + canonical=`hub.chronista.club/@handle` | Accepted | 2026-06-17 | supersedes ADR-012 canonical / ADR-018 |
 | [ADR-020](./ADR-020-federation-wire-creo-optional-layer.md) | 連邦 wire — Creo discovery/relay の optional 層（federation transport doctrine） | Proposed | 2026-06-27 | ADR-018/006/002/019, #12, doc 27 §3.4/§62, doc 28 §5.3/§8 |
+| [ADR-021](./ADR-021-node-vocabulary-coordinated-migration.md) | hub 語彙の node 移行 — VP 命名エピックへの協調追随（W2 一斉切替・`nd_` prefix・spec rename） | Accepted | 2026-07-27 | ADR-020/018/011/019, VP v0.56.0 PR #939 |
