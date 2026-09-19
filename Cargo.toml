@@ -36,5 +36,17 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # 1.2.0: spawn_listen_with_cert (federation cert gap)、 1.3.0: raw QUIC ALPN "unison"、
 # 1.4.0: connection-level auth primitive (enable_auth、 ADR-020 §S3)、
 # 1.5.0: server-initiated reliable stream (ctx.open_server_stream / register_server_channel、
-#        ServerToClient を起こす — relay = universal floor の土台、 ADR-020 §S4)。
-club-unison = "1.5.0"
+#        ServerToClient を起こす — relay = universal floor の土台、 ADR-020 §S4)、
+# 1.6.0: connect_race (Happy Eyeballs v2 staggered-race dialer、 ADR-020 §S6)、
+# 1.7.0: QUIC accept loop の片肺死 fix — accept 内の handshake await 失敗が loop 全体を
+#        殺していた (hub は常駐 QUIC server なのでこれが効く)、
+# 1.8.0: KDL request の safety hint 属性 (readonly / destructive / idempotent)、
+# 1.9.0: buffa 0.5.2 → 0.9.1 で **受信経路の脆弱性 2 件を解消** (UAF: GHSA-9pwq-gcrx-wghh、
+#        unbounded allocation DoS: CVE-2026-55407)。 全 ProtocolMessage の decode に効く。
+#        buffa 0.5 系に patch 版が無く下流の cargo update では直せないため、 下限を
+#        1.9.0 に固定する (1.5 のままだと脆弱な graph に解決し戻れてしまう)。
+# 2.0.0: 呼び出し元の無い public API の一掃 (major)。 **wire bytes は不変** なので 1.x の
+#        client (VP 等) とそのまま通信できる。 hub 側の移行は listen 系 5 メソッド →
+#        `Arc<ProtocolServer>::listener(addr).cert(..).spawn()` builder と、
+#        `ProtocolClient::new_default` → `insecure_localhost` (examples) のみ。
+club-unison = "2.0.0"

@@ -1,6 +1,6 @@
 //! Unison (QUIC) surface — node registry / discovery channel。
 //!
-//! REST (axum) と **同一 tokio runtime** で動く薄い層 (`spawn_listen`)。
+//! REST (axum) と **同一 tokio runtime** で動く薄い層 (`listener(..).spawn()`)。
 //! resource ingestion (`/v1/events`) と tree read (`/v1/tree`) は REST 据え置きで、
 //! ここでは「node が自分を登録 / 互いを発見する」discovery だけを Unison channel で提供する。
 //!
@@ -216,7 +216,11 @@ pub async fn spawn_unison(
     }
 
     let cert_source = build_cert_source(cert, cert_out.as_deref())?;
-    let handle = server.spawn_listen_with_cert(addr, cert_source).await?;
+    let handle = Arc::new(server)
+        .listener(addr)
+        .cert(cert_source)
+        .spawn()
+        .await?;
     tracing::info!(%addr, "Unison surface listening (channels: unison.discovery, nodes, relay)");
     Ok(handle)
 }
@@ -225,7 +229,7 @@ pub async fn spawn_unison(
 ///
 /// self-signed mode で `cert_out` が指定されていれば、 生成 cert の DER をそのパスへ
 /// 書き出す (非 loopback client が `TrustAnchors::Custom` に pin する用)。
-/// `spawn_listen_with_cert` は `CertSource` を consume するため、 export 用に
+/// `ServerListener::cert` は `CertSource` を consume するため、 export 用に
 /// ここで一度 `resolve` して `Provided` に詰め替える。
 fn build_cert_source(cert: UnisonCert, cert_out: Option<&str>) -> Result<CertSource> {
     match cert {
