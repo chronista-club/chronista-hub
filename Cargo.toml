@@ -45,5 +45,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 #        unbounded allocation DoS: CVE-2026-55407)。 全 ProtocolMessage の decode に効く。
 #        buffa 0.5 系に patch 版が無く下流の cargo update では直せないため、 下限を
 #        1.9.0 に固定する (1.5 のままだと脆弱な graph に解決し戻れてしまう)。
-# 公開 API は 1.5.0 から不変 (1.6-1.9 はいずれも additive minor)。
-club-unison = "1.9.0"
+# 2.0.0: 呼び出し元の無い public API の一掃 (major)。 **wire bytes は不変** なので 1.x の
+#        client (VP 等) とそのまま通信できる。 hub 側の移行は listen 系 5 メソッド →
+#        `Arc<ProtocolServer>::listener(addr).cert(..).spawn()` builder と、
+#        `ProtocolClient::new_default` → `insecure_localhost` (examples) のみ。
+club-unison = "2.0.0"
