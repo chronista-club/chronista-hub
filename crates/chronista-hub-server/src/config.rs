@@ -44,7 +44,7 @@ impl std::fmt::Debug for DbAuth {
     }
 }
 
-/// signin する user の階層。 共有 instance (Haven) では最小権限の `Database` を使う。
+/// signin する user の階層。 共有 instance (live storage) では最小権限の `Database` を使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbAuthLevel {
     Root,

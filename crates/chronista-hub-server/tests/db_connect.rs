@@ -12,7 +12,7 @@
 //! 資格情報は `CHRONISTA_HUB_SURREAL_TEST_USERNAME` / `_PASSWORD` (default root/root、 root level)。
 //!
 //! ⚠️ 使い捨てのローカル server 専用。 `001_bootstrap` が `DEFINE NAMESPACE chronista` を
-//! 発行するので、 共有 instance (Haven 等) の root で流さないこと。
+//! 発行するので、 共有 instance (live storage 等) の root で流さないこと。
 
 use std::path::{Path, PathBuf};
 

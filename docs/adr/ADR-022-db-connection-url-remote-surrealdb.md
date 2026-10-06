@@ -63,33 +63,36 @@ Hub に渡すと他 tenant のデータに触れられるので、Hub には渡�
 
 `run_pending_migrations` は `Surreal<Any>` 上でそのまま動く。`_migrations` table も remote 側に作られる。
 
-### D4. 本番の配置先（第一候補: Haven）
+### D4. 本番の配置先: live storage host の SurrealDB
 
-本番 remote の置き場は **Haven（storage-anycreative-01）の既存 SurrealDB `live-commons`（`ws://100.82.103.64:8001`、3.2.x）
-に `chronista` namespace を切る** のを第一候補とする:
+本番 remote は **live 世代 `g20260921d1` の storage host（`fleetstage-storage-g20260921d1` / `100.125.152.46`）の
+SurrealDB live（port 18001）に `chronista` namespace / `hub` database を切る**。
 
-- Studio は既に Tailscale 越しに Haven へ繋がっている（infra `chronista-infra.architecture.json`: "Studio via ws://100.82.103.64"）。運用する部品が増えない
-- creo-memories / GFP と同じ「app は fleet-worker-01、data は Haven」の型に揃う
+- 当初は Haven（storage-anycreative-01）を想定したが、Haven と fleet-worker-01 は 2026-09-21 の Debian 世代交換で
+  **退役済み**（fleetstage `AGENTS.md`「live の実体」）。chronista-hub の Hub live も現在は worker（`fleetstage-worker-g20260921d1`）で動く
+- storage の nftables（`storage-guard.nft`）は 18001 を **worker の Tailscale IP からだけ** 許可している。Hub（worker 上）→ storage は既存の許可経路に乗る
+- creo-memories / GFP / objectrecords と同じ「app は worker、data は storage」の型
 
-代替は fleet-worker-01 上の sidecar（`surreal start rocksdb://...` の quadlet を足し、Tailscale IP にだけ bind）。
-配置先の最終確定と切替作業は infra 側の作業として別に行う（本 ADR はコード側の決定）。
+**Studio からの閲覧**は同じ nftables で意図的に塞がれている（管理端末の IP は許可されていない）。
+SSH の port forward（管理ユーザー `fleetadmin`）か、許可リストへの管理端末追加のどちらで開けるかは
+fleetstage 側の運用判断として別に決める。
 
 ## Consequences
 
 ### 正
 - 本番 DB を Studio からライブで閲覧・調査できる（目的）
-- DB のバックアップ / export を Haven 側の既存運用に乗せられる
+- DB のバックアップ / export を storage host の既存運用（daily-surreal backup）に乗せられる
 - Hub の再起動・image 更新と DB のライフサイクルが分離する
 
 ### 負
-- **各 query にネットワーク往復が乗る**。ADR-016 が embedded を選んだ主目的（最小レイテンシ）を一部手放す。Haven の場合は fleet-worker-01 → Haven の host 間往復
-- Hub の稼働が remote DB（Haven）の稼働に依存する。Haven 停止 = Hub の read / ingestion 停止
+- **各 query にネットワーク往復が乗る**。ADR-016 が embedded を選んだ主目的（最小レイテンシ）を一部手放す。worker → storage の host 間往復
+- Hub の稼働が remote DB（storage host）の稼働に依存する。storage 停止 = Hub の read / ingestion 停止
 - 資格情報（DB user / password）の管理が増える（`op inject` で `.env.live.server` に入れる）
 - 既存 live データの移行が要る（下記）
 
 ### 移行手順（概略、実施は infra 作業）
-1. Haven に root で `chronista` namespace / `hub` database と OWNER の database user（`DEFINE USER ... ON DATABASE`）を作る
-2. Hub を停止 → live の RocksDB ディレクトリを `surreal start rocksdb://<copy>` で開き `surreal export` → Haven へ `surreal import`
+1. storage host の SurrealDB live に root で `chronista` namespace / `hub` database と OWNER の database user（`DEFINE USER ... ON DATABASE`）を作る
+2. Hub を停止 → live の RocksDB ディレクトリを `surreal start rocksdb://<copy>` で開き `surreal export` → storage host へ `surreal import`
 3. `.env.live.server` に `CHRONISTA_HUB_DB_URL` / `SURREALDB_USERNAME` / `SURREALDB_PASSWORD` を追加して Hub を起動
 4. 旧 RocksDB ディレクトリは退避先として一定期間残す
 
@@ -102,5 +105,5 @@ Hub に渡すと他 tenant のデータに触れられるので、Hub には渡�
 ## References
 
 - ADR-016（embedded 採用時の判断と、`Surreal<Any>` による swap path の確保）
-- infra: `products/_overview/chronista-infra.architecture.json`（Haven DBs: Tailscale / VLAN only）
+- fleetstage `AGENTS.md`「live の実体 (2026-09-21 Debian 13 世代交換後)」/ `infra/ansible/roles/storage_surreal/templates/storage-guard.nft.j2`
 - 前例: objectrecords `objectrecords-db/src/client.rs`（`any::connect` + signin）
