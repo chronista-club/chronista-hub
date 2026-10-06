@@ -1,6 +1,6 @@
 # ADR-016: Hub server を Rust + embedded SurrealDB で実装する
 
-- **Status**: Accepted
+- **Status**: Accepted（DB 節は ADR-022 で superseded — 接続先は URL 化、本番は remote）
 - **Date**: 2026-06-11
 - **Supersedes**: scaffold 時 (AC-14) に暗黙採用された TypeScript/Bun 実装
 

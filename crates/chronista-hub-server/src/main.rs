@@ -1,7 +1,7 @@
 //! Chronista Hub server バイナリエントリ。
 //!
 //! 起動シーケンス:
-//!   1. embedded SurrealDB (kv-rocksdb) 接続
+//!   1. SurrealDB 接続 (CHRONISTA_HUB_DB_URL: embedded rocksdb / remote ws、 ADR-022)
 //!   2. AUTO_MIGRATE_ENABLED なら listen 前に migration 適用 (失敗で exit)
 //!   3. consumer 起動 + axum serve (graceful shutdown)
 
@@ -13,7 +13,7 @@ use chronista_hub_server::app::{AppState, build_router};
 use chronista_hub_server::auth::{JwksVerifier, StubVerifier, Verifier, fetch_jwks};
 use chronista_hub_server::config::{AuthConfig, Config};
 use chronista_hub_server::consumer::spawn_consumer;
-use chronista_hub_server::db::{connect_rocksdb, run_pending_migrations};
+use chronista_hub_server::db::{connect, run_pending_migrations};
 use chronista_hub_server::event_log::EventLog;
 use chronista_hub_server::product_token::ProductTokenStore;
 use chronista_hub_server::storage::Storage;
@@ -33,12 +33,20 @@ async fn main() -> anyhow::Result<()> {
     // 各自 explicit config なので影響なし)。 二重 install は無視。
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let cfg = Config::from_env();
+    let cfg = Config::from_env()?;
 
-    let db = connect_rocksdb(&cfg.db_path, &cfg.namespace, &cfg.database).await?;
+    let db = connect(
+        &cfg.db_url,
+        cfg.db_auth.as_ref(),
+        &cfg.namespace,
+        &cfg.database,
+    )
+    .await
+    .with_context(|| format!("connect SurrealDB {}", cfg.db_url))?;
     tracing::info!(
-        ns = %cfg.namespace, db = %cfg.database, path = %cfg.db_path,
-        "connected to embedded SurrealDB"
+        ns = %cfg.namespace, db = %cfg.database, url = %cfg.db_url,
+        auth = ?cfg.db_auth.as_ref().map(|a| a.level),
+        "connected to SurrealDB"
     );
 
     if cfg.auto_migrate {

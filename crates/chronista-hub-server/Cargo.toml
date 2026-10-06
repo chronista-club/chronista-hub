@@ -3,7 +3,7 @@ name = "chronista-hub-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Chronista Hub server — Node Tree meta-registry (axum + embedded SurrealDB)"
+description = "Chronista Hub server — Node Tree meta-registry (axum + SurrealDB)"
 
 [[bin]]
 name = "chronista-hub-server"

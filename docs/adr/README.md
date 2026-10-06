@@ -57,9 +57,10 @@ ADR は spec ↔ memory の橋。 spec を読んで "なぜ?" と思ったら AD
 | [ADR-013](./ADR-013-organization-shared-namespace.md) | Organization / team — shared `@handle` namespace (G12) | Accepted (Phase 1 reserve, Phase 2 impl) | 2026-04-25 | gap G12 |
 | [ADR-014](./ADR-014-observability-and-discovery.md) | Observability + Discovery (Phase 1-3 graded) (G13, G14) | Accepted | 2026-04-25 | gap G13, G14 |
 | [ADR-015](./ADR-015-ac-15-mvp-api-shape.md) | AC-15 MVP API shape — current state codification | Accepted (Phase 1 current state) | 2026-04-26 | ADR-003 相補 |
-| [ADR-016](./ADR-016-server-language-rust-embedded-surrealdb.md) | Hub server を Rust + embedded SurrealDB で実装 (低レイテンシ) | Accepted | 2026-06-11 | ADR-001 / repo戦略 |
+| [ADR-016](./ADR-016-server-language-rust-embedded-surrealdb.md) | Hub server を Rust + embedded SurrealDB で実装 (低レイテンシ) | Accepted (DB 節は ADR-022 で superseded) | 2026-06-11 | ADR-001 / repo戦略 |
 | [ADR-017](./ADR-017-product-token-opaque.md) | product-token は opaque + DB hash (即時 revoke) | Accepted | 2026-06-12 | ADR-010 Phase 2 |
 | [ADR-018](./ADR-018-world-hub-discovery-transport-unison.md) | world↔hub discovery transport — Unison (QUIC) over REST | Accepted | 2026-06-16 | #13, #12, ADR-014/016 |
 | [ADR-019](./ADR-019-host-naming-apex-portal-canonical.md) | Host 命名 + apex portal + canonical=`hub.chronista.club/@handle` | Accepted | 2026-06-17 | supersedes ADR-012 canonical / ADR-018 |
 | [ADR-020](./ADR-020-federation-wire-creo-optional-layer.md) | 連邦 wire — Creo discovery/relay の optional 層（federation transport doctrine） | Proposed | 2026-06-27 | ADR-018/006/002/019, #12, doc 27 §3.4/§62, doc 28 §5.3/§8 |
 | [ADR-021](./ADR-021-node-vocabulary-coordinated-migration.md) | hub 語彙の node 移行 — VP 命名エピックへの協調追随（W2 一斉切替・`nd_` prefix・spec rename） | Accepted | 2026-07-27 | ADR-020/018/011/019, VP v0.56.0 PR #939 |
+| [ADR-022](./ADR-022-db-connection-url-remote-surrealdb.md) | DB 接続を URL 化し、本番は remote SurrealDB へ（Studio 直結） | Accepted | 2026-10-06 | supersedes ADR-016 DB 節 |

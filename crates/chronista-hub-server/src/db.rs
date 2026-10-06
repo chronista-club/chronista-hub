@@ -1,28 +1,63 @@
-//! Embedded SurrealDB 接続 (kv-rocksdb) + 起動時 in-process migrator。
+//! SurrealDB 接続 (URL で embedded / remote を切替) + 起動時 in-process migrator。
 //!
-//! ADR-016: 低レイテンシのため別プロセス無しの in-process embedded を採用。
-//! migration は HTTP `/sql` ではなく SDK 経由で `migrations/*.surql` を順次適用する。
+//! ADR-016 は in-process embedded (kv-rocksdb) を採用した。 ADR-022 で接続先を URL 化し、
+//! 本番は remote (`ws://`) へ寄せて SurrealDB Studio から直接繋げるようにした。
+//! `rocksdb://` を渡せば従来どおり embedded で動く (手元 / e2e)。
+//! migration はどちらでも HTTP `/sql` ではなく SDK 経由で `migrations/*.surql` を順次適用する。
 
 use std::collections::HashSet;
 use std::path::Path;
 
 use surrealdb::Surreal;
-use surrealdb::engine::local::{Db as LocalDb, Mem, RocksDb};
+use surrealdb::engine::any::{self, Any};
+use surrealdb::opt::auth::{Database, Namespace, Root};
 
-pub type Db = Surreal<LocalDb>;
+use crate::config::{DbAuth, DbAuthLevel};
 
-/// RocksDB backed embedded 接続 (本番 / 永続化)。
-pub async fn connect_rocksdb(path: &str, ns: &str, dbname: &str) -> anyhow::Result<Db> {
-    let db = Surreal::new::<RocksDb>(path).await?;
+pub type Db = Surreal<Any>;
+
+/// URL で接続し、 `auth` があれば signin してから ns / db を選ぶ。
+///
+/// - `rocksdb://<dir>`: embedded 永続 (signin 不要)
+/// - `ws://host:port` / `wss://...`: remote (`auth` 必須運用)
+/// - `mem://`: embedded 揮発 (test)
+pub async fn connect(
+    url: &str,
+    auth: Option<&DbAuth>,
+    ns: &str,
+    dbname: &str,
+) -> anyhow::Result<Db> {
+    let db = any::connect(url).await?;
+    if let Some(auth) = auth {
+        let (username, password) = (auth.username.clone(), auth.password.clone());
+        match auth.level {
+            DbAuthLevel::Root => db.signin(Root { username, password }).await?,
+            DbAuthLevel::Namespace => {
+                db.signin(Namespace {
+                    namespace: ns.to_string(),
+                    username,
+                    password,
+                })
+                .await?
+            }
+            DbAuthLevel::Database => {
+                db.signin(Database {
+                    namespace: ns.to_string(),
+                    database: dbname.to_string(),
+                    username,
+                    password,
+                })
+                .await?
+            }
+        };
+    }
     db.use_ns(ns).use_db(dbname).await?;
     Ok(db)
 }
 
 /// In-memory embedded 接続 (test / 揮発)。
 pub async fn connect_mem(ns: &str, dbname: &str) -> anyhow::Result<Db> {
-    let db = Surreal::new::<Mem>(()).await?;
-    db.use_ns(ns).use_db(dbname).await?;
-    Ok(db)
+    connect("mem://", None, ns, dbname).await
 }
 
 /// 未適用 migration を順次適用し、 適用した名前を返す。

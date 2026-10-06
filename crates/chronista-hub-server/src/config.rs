@@ -5,8 +5,11 @@ pub struct Config {
     pub port: u16,
     pub namespace: String,
     pub database: String,
-    /// RocksDB の格納ディレクトリ。
-    pub db_path: String,
+    /// SurrealDB の接続先 URL (ADR-022)。 `rocksdb://<dir>` = embedded、
+    /// `ws://host:port` = remote。 `mem://` は揮発 (test 用)。
+    pub db_url: String,
+    /// remote 接続時の signin 資格情報。 None なら signin しない (embedded は不要)。
+    pub db_auth: Option<DbAuth>,
     pub auto_migrate: bool,
     pub migrations_dir: String,
     /// Unison (QUIC) surface の listen address (node registry/discovery channel)。
@@ -21,6 +24,32 @@ pub struct Config {
     /// (credential 提示なしも許容、 提示時のみ scope 検証 → 現 client を壊さず段階移行)。
     pub federation_auth_required: bool,
     pub auth: AuthConfig,
+}
+
+/// SurrealDB の signin 資格情報 (ADR-022)。 password は Debug に出さない。
+#[derive(Clone, PartialEq, Eq)]
+pub struct DbAuth {
+    pub level: DbAuthLevel,
+    pub username: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for DbAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbAuth")
+            .field("level", &self.level)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
+
+/// signin する user の階層。 共有 instance (Haven) では最小権限の `Database` を使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbAuthLevel {
+    Root,
+    Namespace,
+    Database,
 }
 
 /// Unison (QUIC) surface の TLS cert source (ADR-020 §S1)。
@@ -57,7 +86,7 @@ pub struct AuthConfig {
 }
 
 impl Config {
-    pub fn from_env() -> Self {
+    pub fn from_env() -> anyhow::Result<Self> {
         let issuer = std::env::var("CREO_ID_ISSUER")
             .unwrap_or_else(|_| "https://id.creo-memories.in/".into());
         let jwks_url = std::env::var("CREO_ID_JWKS_URL")
@@ -101,15 +130,25 @@ impl Config {
         let federation_auth_required =
             std::env::var("CHRONISTA_HUB_FEDERATION_AUTH").as_deref() == Ok("required");
 
-        Config {
+        let db_url = resolve_db_url(
+            std::env::var("CHRONISTA_HUB_DB_URL").ok().as_deref(),
+            std::env::var("CHRONISTA_HUB_DB_PATH").ok().as_deref(),
+        );
+        let db_auth = parse_db_auth(
+            std::env::var("SURREALDB_USERNAME").ok().as_deref(),
+            std::env::var("SURREALDB_PASSWORD").ok().as_deref(),
+            std::env::var("SURREALDB_AUTH_LEVEL").ok().as_deref(),
+        )?;
+
+        Ok(Config {
             port: std::env::var("CHRONISTA_HUB_PORT")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3000),
             namespace: std::env::var("SURREALDB_NAMESPACE").unwrap_or_else(|_| "chronista".into()),
             database: std::env::var("SURREALDB_DATABASE").unwrap_or_else(|_| "hub".into()),
-            db_path: std::env::var("CHRONISTA_HUB_DB_PATH")
-                .unwrap_or_else(|_| "./data/hub.rocksdb".into()),
+            db_url,
+            db_auth,
             auto_migrate: std::env::var("AUTO_MIGRATE_ENABLED").as_deref() == Ok("true"),
             migrations_dir: std::env::var("MIGRATIONS_DIR")
                 .unwrap_or_else(|_| "./migrations".into()),
@@ -133,8 +172,52 @@ impl Config {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(300),
             },
-        }
+        })
     }
+}
+
+/// DB 接続先 URL を決める (ADR-022)。
+///
+/// `CHRONISTA_HUB_DB_URL` が最優先。 未設定なら旧来の `CHRONISTA_HUB_DB_PATH` を
+/// embedded rocksdb として扱う (既存 deploy / e2e を壊さない)。 どちらも無ければ
+/// `./data/hub.rocksdb`。 空文字は未設定扱い。
+pub fn resolve_db_url(db_url: Option<&str>, db_path: Option<&str>) -> String {
+    if let Some(url) = db_url.filter(|s| !s.is_empty()) {
+        return url.to_string();
+    }
+    let path = db_path
+        .filter(|s| !s.is_empty())
+        .unwrap_or("./data/hub.rocksdb");
+    format!("rocksdb://{path}")
+}
+
+/// signin 資格情報を組み立てる (ADR-022)。 username / password は両方揃って初めて有効。
+/// 片方だけ・未知の level は設定ミスとして起動を止める。 level の default は `database`。
+pub fn parse_db_auth(
+    username: Option<&str>,
+    password: Option<&str>,
+    level: Option<&str>,
+) -> anyhow::Result<Option<DbAuth>> {
+    let username = username.filter(|s| !s.is_empty());
+    let password = password.filter(|s| !s.is_empty());
+    let (username, password) = match (username, password) {
+        (None, None) => return Ok(None),
+        (Some(u), Some(p)) => (u, p),
+        _ => anyhow::bail!("SURREALDB_USERNAME と SURREALDB_PASSWORD は両方設定する"),
+    };
+    let level = match level.filter(|s| !s.is_empty()).unwrap_or("database") {
+        "root" => DbAuthLevel::Root,
+        "namespace" => DbAuthLevel::Namespace,
+        "database" => DbAuthLevel::Database,
+        other => {
+            anyhow::bail!("SURREALDB_AUTH_LEVEL={other:?} は不正 (root / namespace / database)")
+        }
+    };
+    Ok(Some(DbAuth {
+        level,
+        username: username.to_string(),
+        password: password.to_string(),
+    }))
 }
 
 /// issuer に末尾 `/` を保証 (jwks_url 連結用)。
@@ -143,5 +226,87 @@ fn trailing_slash(s: &str) -> String {
         s.to_string()
     } else {
         format!("{s}/")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn db_url_defaults_to_embedded_rocksdb() {
+        assert_eq!(resolve_db_url(None, None), "rocksdb://./data/hub.rocksdb");
+    }
+
+    #[test]
+    fn db_url_falls_back_to_legacy_db_path() {
+        assert_eq!(
+            resolve_db_url(None, Some("/app/data/hub.rocksdb")),
+            "rocksdb:///app/data/hub.rocksdb"
+        );
+    }
+
+    #[test]
+    fn db_url_wins_over_db_path() {
+        assert_eq!(
+            resolve_db_url(
+                Some("ws://100.82.103.64:8001"),
+                Some("/app/data/hub.rocksdb")
+            ),
+            "ws://100.82.103.64:8001"
+        );
+    }
+
+    #[test]
+    fn empty_db_url_is_unset() {
+        assert_eq!(resolve_db_url(Some(""), Some("/x")), "rocksdb:///x");
+    }
+
+    #[test]
+    fn db_auth_absent_is_none() {
+        assert_eq!(parse_db_auth(None, None, None).unwrap(), None);
+    }
+
+    #[test]
+    fn db_auth_defaults_to_database_level() {
+        let auth = parse_db_auth(Some("hub"), Some("secret"), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(auth.level, DbAuthLevel::Database);
+        assert_eq!(auth.username, "hub");
+        assert_eq!(auth.password, "secret");
+    }
+
+    #[test]
+    fn db_auth_level_is_parsed() {
+        for (s, level) in [
+            ("root", DbAuthLevel::Root),
+            ("namespace", DbAuthLevel::Namespace),
+            ("database", DbAuthLevel::Database),
+        ] {
+            let auth = parse_db_auth(Some("u"), Some("p"), Some(s))
+                .unwrap()
+                .unwrap();
+            assert_eq!(auth.level, level);
+        }
+    }
+
+    #[test]
+    fn db_auth_rejects_half_configured_credentials() {
+        assert!(parse_db_auth(Some("u"), None, None).is_err());
+        assert!(parse_db_auth(None, Some("p"), None).is_err());
+    }
+
+    #[test]
+    fn db_auth_rejects_unknown_level() {
+        assert!(parse_db_auth(Some("u"), Some("p"), Some("admin")).is_err());
+    }
+
+    #[test]
+    fn db_auth_debug_does_not_leak_password() {
+        let auth = parse_db_auth(Some("u"), Some("hunter2"), None)
+            .unwrap()
+            .unwrap();
+        assert!(!format!("{auth:?}").contains("hunter2"));
     }
 }
