@@ -65,6 +65,12 @@ Hub に渡すと他 tenant のデータに触れられるので、Hub には渡�
 
 ### D4. 本番の配置先: live storage host の SurrealDB
 
+> **2026-10-07 追記 — live の切替は保留**。mako 裁定「まずは rocksdb の方を選択していこう」により、
+> live の Hub は当面 embedded RocksDB（`CHRONISTA_HUB_DB_PATH`）のまま運用する。D1〜D3 のコード
+> （URL 切替・signin）は入れ、remote 側の準備（fleetstage #256 の namespace / database / user と
+> 管理端末の ingress）も残す。切り替える時は下記「移行手順」の 2〜3 だけでよい。保留中は Studio から
+> live を直接は見られない。
+
 本番 remote は **live 世代 `g20260921d1` の storage host（`fleetstage-storage-g20260921d1` / `100.125.152.46`）の
 SurrealDB live（port 18001）に `chronista` namespace / `hub` database を切る**。
 
