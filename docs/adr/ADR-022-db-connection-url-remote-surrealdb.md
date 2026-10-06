@@ -73,9 +73,9 @@ SurrealDB live（port 18001）に `chronista` namespace / `hub` database を切�
 - storage の nftables（`storage-guard.nft`）は 18001 を **worker の Tailscale IP からだけ** 許可している。Hub（worker 上）→ storage は既存の許可経路に乗る
 - creo-memories / GFP / objectrecords と同じ「app は worker、data は storage」の型
 
-**Studio からの閲覧**は同じ nftables で意図的に塞がれている（管理端末の IP は許可されていない）。
-SSH の port forward（管理ユーザー `fleetadmin`）か、許可リストへの管理端末追加のどちらで開けるかは
-fleetstage 側の運用判断として別に決める。
+**Studio からの閲覧**は同じ nftables で塞がれている（管理端末の IP は許可されていない）。
+2026-10-06 mako 裁定で、**nftables の許可リストに管理端末（`makomba-1` / `100.71.138.86`）を足し、18001 だけを開ける**
+（SSH port forward 案は不採用）。設定は fleetstage 側の Ansible role で行う（fleetstage lane に依頼済み）。
 
 ## Consequences
 
