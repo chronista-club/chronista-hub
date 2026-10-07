@@ -2,7 +2,7 @@
 # chronista-hub-server — World Tree meta-registry (REST + Unison/QUIC)。
 #
 # REST(axum, TCP) と Unison(club-unison, QUIC/UDP) を 1 バイナリで提供する。
-# embedded SurrealDB (kv-rocksdb、 ADR-016) なので別 DB プロセスは不要。
+# DB は CHRONISTA_HUB_DB_URL で embedded (rocksdb://) / remote (ws://) を切替 (ADR-022)。
 
 # --- builder ---------------------------------------------------------------
 # Debian suite を trixie に pin。 浮動 tag (rust:1.95) はベース移動で glibc 版が
@@ -50,7 +50,8 @@ COPY migrations /app/migrations
 # REST(axum/TCP) と Unison(QUIC/UDP)。 実 bind は env で制御する:
 #   CHRONISTA_HUB_PORT        REST    → 0.0.0.0:PORT       (default 3000)
 #   CHRONISTA_HUB_UNISON_ADDR Unison  → container 内は [::]:7879 を指定すること
-#   CHRONISTA_HUB_DB_PATH     RocksDB → /app/data 配下を volume mount 推奨
+#   CHRONISTA_HUB_DB_URL      remote なら ws://host:port (+ SURREALDB_USERNAME/PASSWORD)
+#   CHRONISTA_HUB_DB_PATH     DB_URL 未設定時の RocksDB → /app/data 配下を volume mount 推奨
 EXPOSE 3000/tcp
 EXPOSE 7879/udp
 

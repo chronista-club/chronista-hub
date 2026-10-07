@@ -1,6 +1,6 @@
-//! Chronista Hub server — Node Tree meta-registry (axum + embedded SurrealDB)。
+//! Chronista Hub server — Node Tree meta-registry (axum + SurrealDB)。
 //!
-//! ADR-016: 低レイテンシのため Rust + in-process embedded SurrealDB (kv-rocksdb)。
+//! ADR-016: Rust 実装。 DB 接続先は ADR-022 で URL 化 (embedded rocksdb / remote ws)。
 
 pub mod app;
 pub mod auth;
