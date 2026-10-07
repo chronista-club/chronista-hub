@@ -70,6 +70,8 @@ Hub に渡すと他 tenant のデータに触れられるので、Hub には渡�
 > （URL 切替・signin）は入れ、remote 側の準備（fleetstage #256 の namespace / database / user と
 > 管理端末の ingress）も残す。切り替える時は下記「移行手順」の 2〜3 だけでよい。保留中は Studio から
 > live を直接は見られない。
+>
+> **2026-10-08 追記 — 切替を実施へ**。mako 裁定「切り替えていこう」。下記「移行手順」で live を remote へ移す。
 
 本番 remote は **live 世代 `g20260921d1` の storage host（`fleetstage-storage-g20260921d1` / `100.125.152.46`）の
 SurrealDB live（port 18001）に `chronista` namespace / `hub` database を切る**。
@@ -96,11 +98,19 @@ SurrealDB live（port 18001）に `chronista` namespace / `hub` database を切�
 - 資格情報（DB user / password）の管理が増える（`op inject` で `.env.live.server` に入れる）
 - 既存 live データの移行が要る（下記）
 
-### 移行手順（概略、実施は infra 作業）
-1. storage host の SurrealDB live に root で `chronista` namespace / `hub` database と OWNER の database user（`DEFINE USER ... ON DATABASE`）を作る
-2. Hub を停止 → live の RocksDB ディレクトリを `surreal start rocksdb://<copy>` で開き `surreal export` → storage host へ `surreal import`
-3. `.env.live.server` に `CHRONISTA_HUB_DB_URL` / `SURREALDB_USERNAME` / `SURREALDB_PASSWORD` を追加して Hub を起動
-4. 旧 RocksDB ディレクトリは退避先として一定期間残す
+### 移行手順（実施は fleetstage の worker / storage 作業）
+1. ✅ storage host の SurrealDB live に root で `chronista` namespace / `hub` database と、OWNER の database user `hub`・
+   VIEWER の namespace user `viewer` を作る（fleetstage role `storage_hub_access`、1Password `FleetFlowVault/fleetstage-chronista-hub-db`）
+2. 新しい Hub image（v0.5.0 以降）を worker に読み込む。この時点では env を変えないので RocksDB のまま動く
+3. Hub を停止 → live の RocksDB ディレクトリを `surreal start rocksdb://<copy>` で開き、**http** で `surreal export --ns chronista --db hub`
+   → storage へ **http** で `surreal import --auth-level database -u hub`（`surreal import` は ws では動かない）。テーブルごとの件数を前後で突き合わせる
+4. env を `CHRONISTA_HUB_DB_URL` / `SURREALDB_USERNAME` / `SURREALDB_PASSWORD` / `SURREALDB_AUTH_LEVEL` に切り替え、
+   unit の `ExecCondition=test -s …/hub.rocksdb/CURRENT` を外して Hub を起動（migration は `count=0` になるはず）
+5. 旧 RocksDB ディレクトリは退避先として一定期間残す。日次 backup に `live/chronista/hub` を足す
+
+予行演習（2026-10-08、手元、SDK 3.1.4 で作った RocksDB / surreal 3.2.3）: export はテーブル定義 16・フィールド定義 104・
+インデックス 7・INSERT 4 文で、root 権限の要る文は含まれない。`hub` user での import、新 Hub の起動（migration `count=0`）、
+`/v1/tree` の移行前後一致まで確認済み。
 
 ## 却下案
 
