@@ -74,8 +74,14 @@ bash scripts/e2e.sh
 ```
 
 env (DB/migration): `CHRONISTA_HUB_PORT` (default 3000) / `SURREALDB_NAMESPACE` (default `chronista`) /
-`SURREALDB_DATABASE` (default `hub`) / `CHRONISTA_HUB_DB_PATH` (RocksDB dir) /
-`AUTO_MIGRATE_ENABLED` / `MIGRATIONS_DIR` (default `./migrations`)。
+`SURREALDB_DATABASE` (default `hub`) / `CHRONISTA_HUB_DB_URL` (接続先、 ADR-022) /
+`CHRONISTA_HUB_DB_PATH` (DB_URL 未設定時の RocksDB dir) / `AUTO_MIGRATE_ENABLED` /
+`MIGRATIONS_DIR` (default `./migrations`)。
+
+DB 接続先 (ADR-022): `CHRONISTA_HUB_DB_URL` が `rocksdb://<dir>` なら embedded、 `ws://host:port`
+なら remote。 未設定時は `rocksdb://$CHRONISTA_HUB_DB_PATH` (default `./data/hub.rocksdb`)。
+remote の signin は `SURREALDB_USERNAME` / `SURREALDB_PASSWORD` / `SURREALDB_AUTH_LEVEL`
+(`database` default / `namespace` / `root`)。
 
 ## Auth (ADR-002/010)
 

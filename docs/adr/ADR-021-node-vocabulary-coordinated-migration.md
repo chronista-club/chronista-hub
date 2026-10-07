@@ -229,8 +229,14 @@ grep 実測で、次は **実装に存在しない**（spec 紙面のみ）:
 | **P1** | 裁定 | §3 の W1/W2/W3 + §2.1 の prefix (a)/(b) + spec file 名の可否 | — | ✅ 2026-07-27（§P1） |
 | **P2** | 紙 | 本 ADR を Accepted 化 / spec `world-tree.kdl` → `node-tree.kdl` 改訂 + CHANGELOG（ADR-011 の SemVer 判定 → pre-1.0 minor-breaking 枠、 spec 0.3.0） | P1 | ✅ 2026-07-27 |
 | **P3** | 実装 | hub PR — 層 A（W2 = 旧名互換なし一斉切替、 protocol 0.7.0）+ B + C。C は §2.1 の窓が開いているうちに | P2 | ✅ 2026-07-27 |
-| **P4** | 出荷 | hub version bump（Cargo.toml 一本 = `hub-v0.3.0-release-version-ssot` の SSOT に従う、 0.4.0）→ deploy → `live_probe` で live 検証 | P0, P3 | 未 |
-| **P5** | 追随 | VP 側 PR — `hub_client.rs` の据え置きコメント解消・wire key を新名へ（`"nodes"` / `"node_id"`）+ **ID issuer の prefix `nd_` 化（裁定 2-(b)）**。W2 なので hub deploy と同じ窓で全マシン更新 | P4 | 未 |
+| **P4** | 出荷 | hub version bump（Cargo.toml 一本 = `hub-v0.3.0-release-version-ssot` の SSOT に従う、 0.4.0）→ deploy → live 検証 | P0, P3 | ✅ 2026-07-27（release PR #47 → ghcr build → hub-live 再起動。§P4 実施記録） |
+| **P5** | 追随 | VP 側 PR — `hub_client.rs` の据え置きコメント解消・wire key を新名へ（`"nodes"` / `"node_id"`）+ **ID issuer の prefix `nd_` 化（裁定 2-(b)）**。W2 なので hub deploy と同じ窓で全マシン更新 | P4 | ✅ code 面（VP#951 + 退行修正 #958 + release cut #956）。残 = 各マシンの binary 更新 |
+
+### P4 実施記録（2026-07-27 flag day）
+
+- 経路: fleetstage#89（Caddyfile.host 再発防止）→ hub release PR #47（nightly→main、merge commit 方式）→ GH Actions `build-images` が ghcr `:latest` を push → fleet-worker-01 で `systemctl --user restart chronista-hub-live-server`（Quadlet `Pull=newer`）→ live = **v0.4.0 / protocol 0.7.0 / channels `nodes`** を `unison_discover`（trust=system）で確認
+- **発見 1 — Caddy 502（upstream family 不整合）**: 再起動後、public REST が 502。真因 = podman 5.8 の pasta が publish を v6 でも bind する一方、container 内 hub は `0.0.0.0:3000`（v4 のみ）listen のため、Caddy の `localhost:12880` dial が ::1 経路に乗り「connect 成功 → reset」で fallback せず 502。**修理 = upstream を `127.0.0.1:12880` に明示**（live + `Caddyfile.live` + fleetstage `Caddyfile.host` に反映）。恒久対処の別案 = hub の bind を `[::]` 化（未実施、任意）
+- **発見 2 — VP 旧行で nd_ 再発行が不発（実マシンのみ踏む退行）**: `mito-mba.local` が新 wire で `node_id=""` register。旧 `wld_id` 行では `SELECT VALUE node_id` が NONE → `take?` Err → 呼び出し側 degraded 継続で再発行に到達しない。**修正 = VP#958**（Err を未発行と同義に潰す + 旧行 regression test）。副産物として live registry に ghost 行（rid `vp-node:`、owner=mako、Private）が 1 件残存 — wire から削除不能、無害、手動掃除は任意 follow-up
 
 P2 を P3 より前に置くのは ADR README の原則（spec = what が先、実装が追う）に従う。
 
