@@ -30,14 +30,12 @@ id.creo-memories.in     各 product
 
 ## Status
 
-- **Phase 0** — KDL spec v0.1 drafted ([AC-11](https://linear.app/chronista/issue/AC-11) Done、 PR #1 で spec 移送)
-- **Phase 1-0** — Repo baseline scaffold (本 commit)
-- **Phase 1-1** — Core registry MVP backend ([AC-14](https://linear.app/chronista/issue/AC-14))
-- **Phase 1-2** — Tree read API v1 ([AC-15](https://linear.app/chronista/issue/AC-15))
-- **Phase 1-3** — Event-sourced ingestion ([AC-16](https://linear.app/chronista/issue/AC-16))
-- **Phase 1-4** — Auth middleware (Creo ID JWKS) ([AC-17](https://linear.app/chronista/issue/AC-17))
-- **Phase 1-5** — Memories hub-sync (pilot) ([AC-18](https://linear.app/chronista/issue/AC-18))
-- **Phase 2+** — Pilot pair / End user dashboard / Universal public URL / 3rd party SDK
+2026-10-08 時点で live（`hub.chronista.club`、v0.5.x）が実際に担っているのは **VP の node registry と federation（Unison / QUIC）だけ**。
+アプリの名簿・利用者の名簿と handle・organization・`/@{handle}` のページ・Creo Memories との同期はまだ無い。
+機能ごとの現状と、Creo ID / Hub / 各アプリの分担は [ADR-023](docs/adr/ADR-023-creo-id-hub-apps-layering.md) を参照。
+
+Linear 時代の Phase 1-1〜1-4（AC-14〜17: registry / tree read / event 取り込み / Creo ID JWKS 認証）はコードとしては揃っている。
+Phase 1-5（AC-18: Memories hub-sync）は未着手。
 
 ## Server (Rust)
 
