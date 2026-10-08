@@ -26,6 +26,8 @@ pub struct AppState {
     pub product_tokens: ProductTokenStore,
     /// 管理 API (token 発行/rotate/revoke) を守る admin key。 None なら管理 API 無効 (fail-closed)。
     pub admin_key: Option<String>,
+    /// Creo ID の issuer (`iss`)。`/start` が来た人の発行元と突き合わせる (ADR-023)。
+    pub issuer: String,
     pub service: String,
     pub version: String,
 }
@@ -55,6 +57,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/health", get(health))
+        .route("/start", get(crate::start::start))
         .route("/v1/tree/{handle}", get(tree_by_handle))
         .route("/v1/tree/{handle}/{*path}", get(tree_by_path))
         .route("/v1/resources/{id}", get(resource_by_id))

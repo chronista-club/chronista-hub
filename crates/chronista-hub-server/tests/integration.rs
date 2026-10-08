@@ -650,6 +650,7 @@ async fn http_publish_then_read() {
         verifier: Arc::new(StubVerifier),
         product_tokens,
         admin_key: None,
+        issuer: "https://id.creo-memories.in/".into(),
         service: "chronista-hub".into(),
         version: "0.0.1".into(),
     };
@@ -819,6 +820,7 @@ async fn admin_endpoints_gated_and_issue_flow() {
         verifier: Arc::new(StubVerifier),
         product_tokens: product_tokens.clone(),
         admin_key: None,
+        issuer: "https://id.creo-memories.in/".into(),
         service: "chronista-hub".into(),
         version: "0.0.1".into(),
     };
@@ -844,6 +846,7 @@ async fn admin_endpoints_gated_and_issue_flow() {
         verifier: Arc::new(StubVerifier),
         product_tokens,
         admin_key: Some("sekrit-admin".into()),
+        issuer: "https://id.creo-memories.in/".into(),
         service: "chronista-hub".into(),
         version: "0.0.1".into(),
     };
