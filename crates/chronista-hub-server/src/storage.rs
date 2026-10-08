@@ -16,7 +16,11 @@ use crate::model::{AppManifest, Resource, Visibility};
 /// 持たない (全 caller 未認証扱い) ため owner 判定はできず、 **public のみ露出**して
 /// private/shared node の endpoints 漏洩を塞ぐ。 product resource (type != vp-node) は
 /// 一切影響を受けない。
-const VP_NODE_REST_GUARD: &str = " AND NOT (type = 'vp-node' AND visibility != 'public')";
+///
+/// 旧名 `vp-world` (ADR-021 の語彙切替前に登録された行) も同じ node registry なので含める。
+/// 含めないと非 public の旧行の endpoints が漏れる (2026-10-08 live で発覚)。
+const VP_NODE_REST_GUARD: &str =
+    " AND NOT (type IN ['vp-node', 'vp-world'] AND visibility != 'public')";
 
 #[derive(Debug, Clone, Default)]
 pub struct TreeReadOptions {
