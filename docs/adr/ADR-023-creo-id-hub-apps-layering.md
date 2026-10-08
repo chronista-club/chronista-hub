@@ -125,7 +125,7 @@ README の Phase 表は Linear 時代（AC-14〜18）のままだったので、
 | node registry と federation（Unison / QUIC） | **使える** | VP の node 21 件。Register / Discover / relay。Creo ID の user-jwt で認証が必須 |
 | tree read（`GET /v1/tree/{handle}`、`/v1/resources/{id}`） | **使える** | 中身は VP の node だけ |
 | events の取り込み（`POST /v1/events`） | 動くが**使われていない** | 発行済みの product-token は 0 件。取り込まれた event も 0 件 |
-| アプリの名簿（ADR-009） | **無い** | manifest の route はあるが登録 flow は未実装 |
+| アプリの名簿（ADR-009） | **無い** → v0.7.0 で段階 1 | 管理 API で登録し、`/start` と `GET /v1/apps` が読む。manifest の取得は段階 2（ADR-009 の 2026-10-09 追記） |
 | 利用者の名簿・handle の claim | **無い** | `sub` を鍵にした owner があるだけ |
 | organization（ADR-013） | **無い** | spec 上の予約のみ |
 | `/@{handle}` のページ | **無い** | `hub.` も apex も 404 |
@@ -160,9 +160,9 @@ README の Phase 表は Linear 時代（AC-14〜18）のままだったので、
 | 作業 | 担当 | 状態 |
 |---|---|---|
 | Auth0 の Default Login Route を Creo Memories の Web に向ける（Q1 のつなぎ） | mako（Auth0 管理画面） | 済（2026-10-08 確認: `app.creo-memories.in/auth/login?iss=…` へ 302） |
-| `/start` が live に出たら Default Login Route を `https://hub.chronista.club/start` に向ける | mako（Auth0 管理画面） | 未 |
-| chronista.club に `iss=` 付きで来た人へアプリ一覧を見せる受け口（Q1 の A） | Hub lane | 実装（`https://hub.chronista.club/start`、下記の追記） |
-| `CREO_ID_AUDIENCES` に `https://id.anycreative.tech` を足す（Q2 の A の 1 歩目） | Hub lane + fleetstage（live env） | template に反映。受け付ける先を足すだけなので refresh_token の確認は要らない |
+| `/start` が live に出たら Default Login Route を `https://hub.chronista.club/start` に向ける | mako（Auth0 管理画面） | 済（2026-10-08 確認: `id.creo-memories.in/login` が `/start?iss=…` へ 302） |
+| chronista.club に `iss=` 付きで来た人へアプリ一覧を見せる受け口（Q1 の A） | Hub lane | 済。v0.6.0 で live（2026-10-08、`https://hub.chronista.club/start`、下記の追記） |
+| `CREO_ID_AUDIENCES` に `https://id.anycreative.tech` を足す（Q2 の A の 1 歩目） | Hub lane + fleetstage（live env） | 済。v0.6.0 と同時に live の env へ反映（2026-10-08）。受け付ける先を足すだけなので refresh_token の確認は要らない |
 | VP の Hub 向けログインを共通の aud に寄せる | VP lane | 未。**先に**共通の API の `allow_offline_access` と VP CLI の refresh_token grant を確かめる |
 | VP が寄せ終えたら `https://hub.chronista.club` を外す | Hub lane | 未 |
 | creo-memories に本 ADR を参照する節を足す | creo-memories lead | 未 |
@@ -172,7 +172,7 @@ README の Phase 表は Linear 時代（AC-14〜18）のままだったので、
 受け口は `https://hub.chronista.club/start` に置く。apex `chronista.club` は Cloudflare 上の静的な portal で、Hub への proxy がまだ無い。ADR-019 D3（Hub は `hub.` に自己完結）に合わせ、apex から proxy するかは portal 側の都合で後から決める。
 
 - `iss` が Creo ID の issuer と一致すれば家族のアプリの一覧を出す。`iss` が無くても一覧は出す。違う `iss` は 400 で、一覧を出さない
-- 一覧は当面 Hub のコード（`src/start.rs`）に持つ。アプリの名簿（ADR-009）ができたら名簿から引く
+- 一覧は当面 Hub のコード（`src/start.rs`）に持つ。アプリの名簿（ADR-009）ができたら名簿から引く → v0.7.0 で名簿から引くようにした（2026-10-09）。新しいアプリは `PUT /v1/apps/{app_id}` で `login_url` を登録すれば並ぶ
 - 並べるのはブラウザでログインするアプリ（Creo Memories、GFP）。VP は CLI なので `vp auth login` を案内する。fleetstage の backstage / hq は運用者向けなので載せない
 
 ## References

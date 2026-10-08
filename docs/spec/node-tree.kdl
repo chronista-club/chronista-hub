@@ -884,12 +884,13 @@ resource-type "app" {
         field "description" string
         field "icon_url"    string
         field "home_url"    string
+        field "login_url"   string description="ログインを始める URL (https)。 Hub の /start が link にする (ADR-023)。 無い = CLI でログインするアプリ"
         field "scopes" list {
             element string
         }
         field "verified"    bool default=#false
         field "manifest_version"   string description="準拠 spec version (G6)"
-        field "manifest_url"       string required=#true
+        field "manifest_url"       string description="ADR-009 の段階 1 (管理 API 登録) では任意。 段階 2 で必須に戻す"
         field "public_key_jwks_uri" string
         field "status"      enum extensible=#true default="active" {
             value "pending"        description="manifest 取得済、 admin review 待ち"

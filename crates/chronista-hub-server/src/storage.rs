@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::db::Db;
-use crate::model::{AppManifest, Resource, Visibility};
+use crate::model::{AppEntry, AppManifest, AppStatus, Resource, Visibility};
 
 /// REST の未認証 tree/resource read で **vp-node (federation registry) の非 public を
 /// 隠す** guard (ADR-020 §S5)。 owner/visibility 分離は Unison `nodes.Discover` が
@@ -76,6 +76,62 @@ impl ResourceRow {
             payload: r.payload.clone(),
             created_at: r.created_at.clone(),
             updated_at: r.updated_at.clone(),
+        }
+    }
+}
+
+/// `PUT /v1/apps/{app_id}` で置き換えずに残す `app` の field (名簿の管理 API の外で決まるもの)。
+const APP_FIELDS_KEPT_ON_PUT: &[&str] = &[
+    "scopes",
+    "verified",
+    "manifest_version",
+    "public_key_jwks_uri",
+];
+
+/// `app` table の行 (DB column 名 = spec の snake_case)。
+#[derive(Debug, Serialize, Deserialize)]
+struct AppRow {
+    app_id: String,
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icon_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    home_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    login_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manifest_url: Option<String>,
+    status: AppStatus,
+}
+
+impl From<AppRow> for AppEntry {
+    fn from(r: AppRow) -> Self {
+        AppEntry {
+            app_id: r.app_id,
+            name: r.name,
+            description: r.description,
+            icon_url: r.icon_url,
+            home_url: r.home_url,
+            login_url: r.login_url,
+            manifest_url: r.manifest_url,
+            status: r.status,
+        }
+    }
+}
+
+impl From<AppEntry> for AppRow {
+    fn from(e: AppEntry) -> Self {
+        AppRow {
+            app_id: e.app_id,
+            name: e.name,
+            description: e.description,
+            icon_url: e.icon_url,
+            home_url: e.home_url,
+            login_url: e.login_url,
+            manifest_url: e.manifest_url,
+            status: e.status,
         }
     }
 }
@@ -152,19 +208,16 @@ impl Storage {
     }
 
     pub async fn get_app_manifest(&self, app_id: &str) -> anyhow::Result<Option<AppManifest>> {
-        // manifest 専用 ingestion path は未実装 (ADR-009 Phase 2)。
-        // 暫定: type='app' の resource を引いて payload を mapping。
-        let rows: Vec<Value> = self
+        // manifest の取得 (well-known) は ADR-009 の段階 2。 今は名簿 (`app` table) から組む。
+        let row: Option<Value> = self
             .db
-            .query("SELECT * FROM hub_resource WHERE rid = $id AND type = 'app' LIMIT 1")
+            .query("SELECT * OMIT id FROM ONLY type::record('app', $id)")
             .bind(("id", app_id.to_string()))
             .await?
             .take(0)?;
-        let resources = rows_to_resources(rows)?;
-        let Some(row) = resources.into_iter().next() else {
+        let Some(p) = row else {
             return Ok(None);
         };
-        let p = &row.payload;
         Ok(Some(AppManifest {
             app_id: app_id.to_string(),
             name: p
@@ -183,6 +236,52 @@ impl Storage {
                     .collect()
             }),
         }))
+    }
+
+    /// 名簿で active なアプリを app_id 順に返す (`GET /v1/apps`、 `/start`)。
+    pub async fn list_active_apps(&self) -> anyhow::Result<Vec<AppEntry>> {
+        let rows: Vec<Value> = self
+            .db
+            .query("SELECT * OMIT id FROM app WHERE status = 'active' ORDER BY app_id")
+            .await?
+            .take(0)?;
+        rows.into_iter()
+            .map(|v| {
+                serde_json::from_value::<AppRow>(v)
+                    .map(AppEntry::from)
+                    .map_err(anyhow::Error::from)
+            })
+            .collect()
+    }
+
+    /// 名簿の 1 行を登録 / 置き換える。 `entry` に無い表示系の field は消す (PUT)。
+    /// scope や verified など名簿の管理 API が扱わない field は残す (ADR-009 の段階 2 が持つ)。
+    pub async fn put_app(&self, entry: &AppEntry) -> anyhow::Result<()> {
+        let existing: Option<Value> = self
+            .db
+            .query("SELECT * OMIT id FROM ONLY type::record('app', $id)")
+            .bind(("id", entry.app_id.clone()))
+            .await?
+            .take(0)?;
+        let mut content = Map::new();
+        if let Some(Value::Object(old)) = existing {
+            for key in APP_FIELDS_KEPT_ON_PUT {
+                if let Some(v) = old.get(*key) {
+                    content.insert((*key).to_string(), v.clone());
+                }
+            }
+        }
+        let Value::Object(new) = serde_json::to_value(AppRow::from(entry.clone()))? else {
+            anyhow::bail!("AppRow must serialize to an object");
+        };
+        content.extend(new);
+        self.db
+            .query("UPSERT type::record('app', $id) CONTENT $content")
+            .bind(("id", entry.app_id.clone()))
+            .bind(("content", Value::Object(content)))
+            .await?
+            .check()?;
+        Ok(())
     }
 
     pub async fn upsert_resource(&self, resource: &Resource) -> anyhow::Result<()> {

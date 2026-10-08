@@ -47,6 +47,25 @@ optional: `description`, `icon_url`, `health_endpoint`, `admin_contact`, `privac
 | v0.2 | v0.1 | ⚠️ default 補完 + sunset 警告 |
 | v0.2 | v0.3 | ❌ required missing reject |
 
+## 2026-10-09 追記 — 段階導入
+
+上の registration flow は、各アプリが well-known manifest を配信していることが前提になっている。2026-10 時点で配信しているアプリは無い。そのため次の 2 段に分けて入れる。
+
+**段階 1（v0.7.0）— 管理者が名簿に書く**
+
+- 名簿の正本は spec の `app` table（`resource-type "app"`）。record id は `app_id`
+- 登録と更新は `PUT /v1/apps/{app_id}`（`X-Admin-Key`、product-token の管理 API と同じ守り）。body は spec の field 名（`name` / `description` / `icon_url` / `home_url` / `login_url` / `manifest_url` / `status`）。PUT なので、送らなかった表示系の field は消え、`status` を省くと `active` になる。知らない field（GET の camelCase など）は 400 で弾く。`scopes` / `verified` など段階 2 が決める field は残す
+- URL はすべて `https://` に限る（`/start` に link として出るため）
+- 公開の `GET /v1/apps` が active なアプリを返し、Hub の `/start`（ADR-023）が `login_url` を持つものを並べる
+- `GET /v1/apps/{app_id}/manifest` は名簿から組む（以前は `hub_resource` の `type = 'app'` を見ていたが、そこに行は無かった）
+- 家族のアプリ（Creo Memories / GFP / Vantage Point）は migration 008 で seed する
+- 退会（deregister）は `status` を `deregistered` にするだけ。resource の tombstone と token の revoke は段階 2
+- product-token の発行は、まだ名簿への登録を条件にしない（既存の発行を壊さないため）
+
+**段階 2 — manifest を取りに行く**
+
+`POST /v1/apps { manifest_url }`、JSON Schema 検証、`scopes_requested` の承認と product-token の連動、24h refresh、deregistration の 90 日 tombstone。各アプリが manifest を配信し始めたら入れる。そのとき `manifest_url` を必須に戻す。
+
 ## Consequences
 
 ### 正
