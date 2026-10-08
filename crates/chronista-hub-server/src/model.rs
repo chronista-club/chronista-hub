@@ -43,6 +43,39 @@ pub struct AppManifest {
     pub permissions: Option<Vec<String>>,
 }
 
+/// アプリの名簿での状態 (spec `resource-type "app"` の `status`)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppStatus {
+    /// manifest 取得済、 admin review 待ち
+    Pending,
+    Active,
+    /// deregister 進行中
+    Deregistering,
+    /// 完全削除済
+    Deregistered,
+}
+
+/// アプリの名簿の 1 行 (`app` table、 ADR-009 の段階 1)。 API には camelCase で出す。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppEntry {
+    pub app_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_url: Option<String>,
+    /// ログインを始める URL。 `/start` の link 先。 None = CLI でログインするアプリ
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_url: Option<String>,
+    pub status: AppStatus,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
     #[serde(rename = "resource.created")]
