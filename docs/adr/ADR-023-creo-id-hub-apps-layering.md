@@ -160,9 +160,9 @@ README の Phase 表は Linear 時代（AC-14〜18）のままだったので、
 | 作業 | 担当 | 状態 |
 |---|---|---|
 | Auth0 の Default Login Route を Creo Memories の Web に向ける（Q1 のつなぎ） | mako（Auth0 管理画面） | 済（2026-10-08 確認: `app.creo-memories.in/auth/login?iss=…` へ 302） |
-| `/start` が live に出たら Default Login Route を `https://hub.chronista.club/start` に向ける | mako（Auth0 管理画面） | 未 |
-| chronista.club に `iss=` 付きで来た人へアプリ一覧を見せる受け口（Q1 の A） | Hub lane | 実装（`https://hub.chronista.club/start`、下記の追記） |
-| `CREO_ID_AUDIENCES` に `https://id.anycreative.tech` を足す（Q2 の A の 1 歩目） | Hub lane + fleetstage（live env） | template に反映。受け付ける先を足すだけなので refresh_token の確認は要らない |
+| `/start` が live に出たら Default Login Route を `https://hub.chronista.club/start` に向ける | mako（Auth0 管理画面） | 済（2026-10-08 確認: `id.creo-memories.in/login` が `/start?iss=…` へ 302） |
+| chronista.club に `iss=` 付きで来た人へアプリ一覧を見せる受け口（Q1 の A） | Hub lane | 済。v0.6.0 で live（2026-10-08、`https://hub.chronista.club/start`、下記の追記） |
+| `CREO_ID_AUDIENCES` に `https://id.anycreative.tech` を足す（Q2 の A の 1 歩目） | Hub lane + fleetstage（live env） | 済。v0.6.0 と同時に live の env へ反映（2026-10-08）。受け付ける先を足すだけなので refresh_token の確認は要らない |
 | VP の Hub 向けログインを共通の aud に寄せる | VP lane | 未。**先に**共通の API の `allow_offline_access` と VP CLI の refresh_token grant を確かめる |
 | VP が寄せ終えたら `https://hub.chronista.club` を外す | Hub lane | 未 |
 | creo-memories に本 ADR を参照する節を足す | creo-memories lead | 未 |
