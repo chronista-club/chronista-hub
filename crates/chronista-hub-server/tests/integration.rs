@@ -505,6 +505,71 @@ async fn rest_read_hides_nonpublic_vp_nodes() {
     );
 }
 
+/// ADR-021 の語彙切替 (2026-07-27) より前に登録された旧名 `vp-world` 行も、 中身は同じ
+/// node registry (endpoints 入り)。 guard が `vp-node` しか見ないと非 public の旧行が
+/// 未認証 REST から漏れる (2026-10-08 live で 19 件の露出を確認・削除済み)。
+#[tokio::test]
+async fn rest_read_hides_nonpublic_legacy_vp_world_rows() {
+    let (storage, _log, _pt) = setup_mem().await;
+    let opts = TreeReadOptions::default();
+
+    let legacy = |id: &str, visibility| Resource {
+        id: id.into(),
+        r#type: "vp-world".into(),
+        path: format!("/vp/{id}"),
+        handle: "vp-disco".into(),
+        owner: None,
+        visibility,
+        payload: serde_json::json!({
+            "name": "legacy",
+            "wld_id": "wld_x",
+            "endpoints": ["[2400:4150::9]:32000"],
+        }),
+        created_at: "2026-07-11T00:00:00Z".into(),
+        updated_at: "2026-07-23T00:00:00Z".into(),
+    };
+    storage
+        .upsert_resource(&legacy("vp-world:wld_priv", Visibility::Private))
+        .await
+        .unwrap();
+    storage
+        .upsert_resource(&legacy("vp-world:wld_pub", Visibility::Public))
+        .await
+        .unwrap();
+
+    let tree = storage
+        .get_resources_by_handle("vp-disco", &opts)
+        .await
+        .unwrap();
+    let ids: Vec<&str> = tree.iter().map(|r| r.id.as_str()).collect();
+    assert!(
+        !ids.contains(&"vp-world:wld_priv"),
+        "private legacy row hidden from REST tree"
+    );
+    assert!(
+        ids.contains(&"vp-world:wld_pub"),
+        "public legacy row visible"
+    );
+
+    let by_path = storage
+        .get_resources_by_path("vp-disco", "/", &opts)
+        .await
+        .unwrap();
+    assert!(
+        !by_path.iter().any(|r| r.id == "vp-world:wld_priv"),
+        "private legacy row hidden from path read"
+    );
+
+    assert!(
+        storage
+            .get_resource_by_id("vp-world:wld_priv")
+            .await
+            .unwrap()
+            .is_none(),
+        "private legacy row hidden by id"
+    );
+}
+
 #[tokio::test]
 async fn event_log_append_and_dedup() {
     let (_storage, log, _pt) = setup_mem().await;
