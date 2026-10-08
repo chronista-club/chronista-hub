@@ -1,6 +1,6 @@
 # ADR-023: Creo ID / Chronista Hub / 各アプリの分担 — アプリを作るたびにアカウントを増やさない
 
-- **Status**: Proposed（分岐 Q1 / Q2 は mako の判断待ち。判断が出たら Accepted にする）
+- **Status**: Accepted（2026-10-08 mako 裁定「OK」で、Q1 / Q2 とも推奨案 A。Q1 は A ができるまで B でつなぐ）
 - **Date**: 2026-10-08
 - **Supersedes**: ADR-002 の「handle の claim は Creo ID に委譲」の部分（D3）。ADR-002 のそれ以外（rename / reclaim / canonicalization の方針）は有効
 - **Related**: ADR-002 / 008 / 009 / 010 / 013 / 019 / 020、creo-memories の canonical rule（`mem_1CbMiGk28cSeQ1BjB6P7hq`）
@@ -54,7 +54,7 @@ Auth0 tenant `anycreative` 全体に効く設定は、特定のアプリの持�
 
 - Default Login Route（やり直し先）、ログイン画面の見た目と文言、tenant の表示名、ログイン方法の有効・無効、custom domain
 - 変更は mako の判断で行い、記録は Hub の docs（本 ADR とその後継）に置く。各アプリの repo には置かない
-- やり直し先をどこにするかは **Q1**
+- やり直し先は **Q1 の A**（chronista.club の受け口）。それができるまでは B（Creo Memories の Web）
 
 ### D5. 新しいアプリを Creo ID につなぐ手順
 
@@ -79,7 +79,7 @@ canonical rule（iss / aud を 1 つに固定し、アプリの区別は scope�
 
 | アプリ | 外れ方 | 扱い |
 |---|---|---|
-| **Hub 自身** | aud `https://hub.chronista.club`（Auth0 に Hub 専用の API がある） | **Q2** |
+| **Hub 自身** | aud `https://hub.chronista.club`（Auth0 に Hub 専用の API がある） | **Q2 の A** で共通の aud へ寄せる |
 | VP | aud `https://api.vantage-point.app` | VP の判断。Hub にログインする VP は Hub の aud に合わせて token を取っている（Q2 の影響を受ける） |
 | fleetflowd | 入口が素の Auth0 domain、aud `https://api.fleetstage.cloud` | fleetflow 側の判断。M2M なら canonical rule の適用外 |
 | Creo demo | 入口が素の Auth0 domain | creo-memories 側で直す |
@@ -88,7 +88,7 @@ canonical rule（iss / aud を 1 つに固定し、アプリの区別は scope�
 
 各 API が scope を実際に確かめているかは未確認。
 
-## mako に聞きたい分岐
+## 分岐と裁定（2026-10-08、mako「OK」= 推奨案）
 
 ### Q1. やり直し先（Default Login Route）をどこにするか
 
@@ -100,7 +100,7 @@ canonical rule（iss / aud を 1 つに固定し、アプリの区別は scope�
 | B. Creo Memories の Web に向ける | 管理画面の設定だけ | 今すぐ変えられる。利用者がいちばん多い | 中立ではない。GFP の利用者が Creo に落ちる、という逆向きの同じ問題 |
 | C. 今のまま（gfp.works） | 何もしない | 手間が無い | Creo の利用者が GFP の紹介ページで止まる問題が残る |
 
-推奨は **A**。A ができるまでの間は B にしておくと、利用者の多い側の迷子が減る。
+**裁定: A**。A ができるまでの間は B にして、利用者の多い側の迷子を減らす。Auth0 の設定変更は管理画面での作業で、mako が行う。
 
 ### Q2. Hub 自身の aud をどうするか
 
@@ -112,13 +112,13 @@ Hub は aud を一覧で持てる（`CREO_ID_AUDIENCES`、ADR-010）。
 | B. Hub 専用の aud を正式な例外にする | 今のまま | 手間が無い。Hub の API を Auth0 上で独立させておける | 家族の中で Hub だけ別の token が要る。新しいアプリが Hub を呼ぶたびに token を取り分ける |
 | C. 一度に切り替える | aud を共通だけにし、VP と同時に出す | 早く揃う | VP と Hub の同時リリースが要る。切替の当日に token が取れないと federation が止まる |
 
-推奨は **A**。
+**裁定: A**。
 
 注意: 2026-07-07〜11 に federation が 4 日間止まった件の原因は、VP の token の失効と refresh_token が出ていなかったこと。refresh_token が出る条件の 1 つは Auth0 の API（resource server）側の `allow_offline_access` で、今は Hub 専用の API に設定してある。aud を共通に寄せるときは、共通の API にも同じ設定があることと、VP CLI の client に refresh_token の grant があることを確かめてから切り替える。
 
 ## 今 live で使えるもの（2026-10-08 実測）
 
-README の Phase 表は Linear 時代（AC-14〜18）のままなので、ここに現状を書く。Q1 の判断材料でもある。
+README の Phase 表は Linear 時代（AC-14〜18）のままだったので、ここに現状を書く（README の Status はここを指す）。
 
 | 機能 | live（`hub.chronista.club`、v0.5.0） | 備考 |
 |---|---|---|
@@ -132,7 +132,7 @@ README の Phase 表は Linear 時代（AC-14〜18）のままなので、ここ
 | apex `chronista.club` | 静的な portal（Cloudflare） | Hub への proxy は無い |
 | Creo Memories との同期（AC-18） | **無い** | live に Creo の resource は無い |
 
-つまり Hub は今、VP の federation の土台としてだけ live で働いている。Q1 の A を選ぶと、やり直し先の受け口が `/@{handle}` より先に Hub の最初の利用者向けページになる。
+つまり Hub は今、VP の federation の土台としてだけ live で働いている。Q1 の A により、やり直し先の受け口が `/@{handle}` より先に Hub の最初の利用者向けページになる。
 
 ## Consequences
 
@@ -154,6 +154,17 @@ README の Phase 表は Linear 時代（AC-14〜18）のままなので、ここ
 - **Hub をログインの入口にする**（Hub が OIDC の client になり、各アプリは Hub 経由でログインする） — Hub が止まると全アプリのログインが止まる。D2 と矛盾する
 - **自前の認可サーバ（creo-memories design 25、repo `creo-id`）を再開する** — Auth0 の上で「アカウント 1 つ」はすでに達成できている。2026-04-25 から骨組みで止まっており、止めたままにする
 - **アプリごとに tenant を分ける** — アカウントが増える。mako の出発点と逆
+
+## 次の作業（本 ADR の結果）
+
+| 作業 | 担当 | 状態 |
+|---|---|---|
+| Auth0 の Default Login Route を Creo Memories の Web に向ける（Q1 のつなぎ） | mako（Auth0 管理画面） | 未 |
+| chronista.club に `iss=` 付きで来た人へアプリ一覧を見せる受け口（Q1 の A） | Hub lane | 未。apex と `hub.` のどちらに置くかは実装時に決める |
+| `CREO_ID_AUDIENCES` に `https://id.anycreative.tech` を足す（Q2 の A の 1 歩目） | Hub lane + fleetstage（live env） | 未。共通の API の `allow_offline_access` を先に確かめる |
+| VP の Hub 向けログインを共通の aud に寄せる | VP lane | 未 |
+| VP が寄せ終えたら `https://hub.chronista.club` を外す | Hub lane | 未 |
+| creo-memories に本 ADR を参照する節を足す | creo-memories lead | 未 |
 
 ## References
 
