@@ -23,6 +23,14 @@ fn migrations_dir() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../migrations"))
 }
 
+fn migration_count() -> usize {
+    std::fs::read_dir(migrations_dir())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".surql"))
+        .count()
+}
+
 /// ws テストは同じ server に 001 の DDL (DEFINE NAMESPACE 等) を投げるので、 並列だと
 /// write conflict になる。 本番は Hub 1 台が起動時に 1 回流すだけなので、 テストだけ直列化する。
 static WS_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -46,7 +54,7 @@ async fn rocksdb_url_writes_to_disk() {
     let applied = run_pending_migrations(&db, migrations_dir()).await.unwrap();
     assert_eq!(
         applied.len(),
-        7,
+        migration_count(),
         "fresh DB applies all migrations: {applied:?}"
     );
     let again = run_pending_migrations(&db, migrations_dir()).await.unwrap();
@@ -85,7 +93,7 @@ async fn ws_url_connects_signs_in_and_migrates() {
     let applied = run_pending_migrations(&db, migrations_dir()).await.unwrap();
     assert_eq!(
         applied.len(),
-        7,
+        migration_count(),
         "remote DB applies all migrations: {applied:?}"
     );
 

@@ -4,7 +4,15 @@
 
 ## [Unreleased]
 
-(none)
+アプリの名簿（[ADR-009](../adr/ADR-009-product-manifest-schema.md) の段階 1）。
+
+### Added
+
+- `resource-type "app"` に `login_url`（ログインを始める URL。Hub の `/start` が link にする、ADR-023）
+
+### Changed（non-breaking — 制約の緩和）
+
+- `resource-type "app"` の `manifest_url` を必須から任意へ。段階 1 は管理 API で登録し、各アプリの well-known manifest はまだ配信されていないため。段階 2 で manifest の取得を始めたら必須に戻す
 
 ## [0.3.0] — 2026-07-27
 

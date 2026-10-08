@@ -49,10 +49,15 @@ fn sample_event(event_id: &str, idem: &str, res: Resource) -> EventEnvelope {
 async fn setup_mem() -> (Storage, EventLog, ProductTokenStore) {
     let db = connect_mem("chronista", "hub").await.unwrap();
     let applied = run_pending_migrations(&db, migrations_dir()).await.unwrap();
+    let expected = std::fs::read_dir(migrations_dir())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".surql"))
+        .count();
     assert_eq!(
         applied.len(),
-        7,
-        "expected 7 migrations applied, got {applied:?}"
+        expected,
+        "expected every migration applied, got {applied:?}"
     );
     (
         Storage::new(db.clone()),

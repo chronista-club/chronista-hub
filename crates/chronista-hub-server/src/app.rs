@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::auth::{AuthError, PrincipalKind, Verifier, authenticate};
 use crate::event_log::EventLog;
-use crate::model::{Visibility, validate_envelope};
+use crate::model::{AppEntry, AppStatus, Visibility, validate_envelope};
 use crate::product_token::ProductTokenStore;
 use crate::storage::{Storage, TreeReadOptions};
 
@@ -61,9 +61,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/tree/{handle}", get(tree_by_handle))
         .route("/v1/tree/{handle}/{*path}", get(tree_by_path))
         .route("/v1/resources/{id}", get(resource_by_id))
+        .route("/v1/apps", get(list_apps))
         .route("/v1/apps/{app_id}/manifest", get(app_manifest))
         .route("/v1/events", post(post_events))
         // --- admin (X-Admin-Key 必須、 HUB_ADMIN_KEY 未設定なら全て 404) ---
+        .route("/v1/apps/{app_id}", axum::routing::put(put_app))
         .route(
             "/v1/apps/{app_id}/tokens",
             get(list_tokens).post(issue_token),
@@ -167,6 +169,12 @@ async fn app_manifest(
         Some(m) => Ok(Json(m).into_response()),
         None => Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()),
     }
+}
+
+/// 家族のアプリの名簿 (ADR-009 の段階 1)。 公開情報なので認証なし、 active だけを返す。
+async fn list_apps(State(st): State<AppState>) -> Result<Response, AppError> {
+    let apps = st.storage.list_active_apps().await?;
+    Ok(Json(json!({ "apps": apps })).into_response())
 }
 
 async fn post_events(
@@ -369,4 +377,97 @@ async fn list_tokens(
     }
     let tokens = st.product_tokens.list(&app_id).await?;
     Ok(Json(json!({ "tokens": tokens })).into_response())
+}
+
+// ============================================================
+// Admin endpoints — アプリの名簿への登録 / 更新 (ADR-009 の段階 1)
+// ============================================================
+
+/// `PUT /v1/apps/{app_id}` の body。 field 名は spec (`resource-type "app"`) の snake_case。
+/// 知らない field は弾く: GET の camelCase (`loginUrl`) をそのまま PUT し返すと、 黙って
+/// 無視された URL が消える (PUT は置き換え) ため。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PutAppRequest {
+    name: Option<String>,
+    description: Option<String>,
+    icon_url: Option<String>,
+    home_url: Option<String>,
+    login_url: Option<String>,
+    manifest_url: Option<String>,
+    status: Option<AppStatus>,
+}
+
+async fn put_app(
+    State(st): State<AppState>,
+    Path(app_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    if let Err(resp) = check_admin(&st, &headers) {
+        return Ok(*resp);
+    }
+    let bad =
+        |msg: &str| Ok((StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response());
+    let req: PutAppRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return bad(
+                "invalid JSON (status must be pending / active / deregistering / deregistered)",
+            );
+        }
+    };
+    if !is_app_id(&app_id) {
+        return bad(
+            "app_id must be 2-40 chars of a-z, 0-9 and '-', starting with a letter or digit",
+        );
+    }
+    let name = req.name.as_deref().map(str::trim).unwrap_or("");
+    if name.is_empty() || name.chars().count() > 80 {
+        return bad("name is required (1-80 chars)");
+    }
+    for (field, url) in [
+        ("icon_url", &req.icon_url),
+        ("home_url", &req.home_url),
+        ("login_url", &req.login_url),
+        ("manifest_url", &req.manifest_url),
+    ] {
+        if let Some(u) = url
+            && !is_https_url(u)
+        {
+            return bad(&format!("{field} must be an https:// URL"));
+        }
+    }
+    let entry = AppEntry {
+        app_id,
+        name: name.to_string(),
+        description: req.description.filter(|d| !d.trim().is_empty()),
+        icon_url: req.icon_url,
+        home_url: req.home_url,
+        login_url: req.login_url,
+        manifest_url: req.manifest_url,
+        status: req.status.unwrap_or(AppStatus::Active),
+    };
+    st.storage.put_app(&entry).await?;
+    tracing::info!(app_id = %entry.app_id, status = ?entry.status, "admin: app roster entry put");
+    Ok(Json(entry).into_response())
+}
+
+/// app_id は URL と record id に入るので、 小文字英数と `-` に限る。
+fn is_app_id(s: &str) -> bool {
+    let len = s.len();
+    (2..=40).contains(&len)
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !s.starts_with('-')
+}
+
+/// `/start` に link として出るので、 https で host のある URL だけを通す
+/// (`javascript:` や `data:` を名簿に入れない)。
+fn is_https_url(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !host.is_empty() && !s.chars().any(|c| c.is_whitespace() || c.is_control())
 }

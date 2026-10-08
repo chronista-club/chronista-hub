@@ -5,7 +5,8 @@
 //! 押したアプリが自分のログインを始める。Hub は Auth0 の client を持たず、ログインの
 //! 途中にも入らない (ADR-023 D2: ログインを Hub に依存させない)。
 //!
-//! 一覧は当面ここに持つ。アプリの名簿 (ADR-009) ができたら名簿から引く。
+//! 一覧はアプリの名簿 (`app` table、 ADR-009 の段階 1) から引く。`login_url` を持つ active な
+//! アプリだけが並ぶ。
 
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
@@ -13,26 +14,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::app::AppState;
-
-/// 家族のアプリ 1 つ。`login_url` はそのアプリがログインを始める URL。
-struct FamilyApp {
-    name: &'static str,
-    description: &'static str,
-    login_url: &'static str,
-}
-
-const WEB_APPS: &[FamilyApp] = &[
-    FamilyApp {
-        name: "Creo Memories",
-        description: "記憶と Atlas",
-        login_url: "https://app.creo-memories.in/auth/login",
-    },
-    FamilyApp {
-        name: "GFP",
-        description: "Go Fast Packing",
-        login_url: "https://app.gfp.works/auth/login",
-    },
-];
+use crate::model::AppEntry;
 
 #[derive(Debug, Deserialize)]
 pub struct StartQuery {
@@ -53,17 +35,35 @@ pub async fn start(State(st): State<AppState>, Query(q): Query<StartQuery>) -> R
             ),
         );
     }
-    html(StatusCode::OK, &page("Creo ID でログイン", &app_list()))
+    match st.storage.list_active_apps().await {
+        Ok(apps) => html(
+            StatusCode::OK,
+            &page("Creo ID でログイン", &app_list(&apps)),
+        ),
+        Err(e) => {
+            tracing::error!(error = %e, "start: app roster unavailable");
+            html(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &page(
+                    "アプリの一覧を読めませんでした",
+                    "<p>お使いのアプリからログインし直してください。</p>",
+                ),
+            )
+        }
+    }
 }
 
-fn app_list() -> String {
+fn app_list(apps: &[AppEntry]) -> String {
     let mut items = String::new();
-    for app in WEB_APPS {
+    for app in apps {
+        let Some(login_url) = app.login_url.as_deref() else {
+            continue;
+        };
         items.push_str(&format!(
             "<li><a href=\"{url}\"><strong>{name}</strong><span>{desc}</span></a></li>",
-            url = escape(app.login_url),
-            name = escape(app.name),
-            desc = escape(app.description),
+            url = escape(login_url),
+            name = escape(&app.name),
+            desc = escape(app.description.as_deref().unwrap_or("")),
         ));
     }
     format!(
