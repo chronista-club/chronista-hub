@@ -64,3 +64,4 @@ ADR は spec ↔ memory の橋。 spec を読んで "なぜ?" と思ったら AD
 | [ADR-020](./ADR-020-federation-wire-creo-optional-layer.md) | 連邦 wire — Creo discovery/relay の optional 層（federation transport doctrine） | Proposed | 2026-06-27 | ADR-018/006/002/019, #12, doc 27 §3.4/§62, doc 28 §5.3/§8 |
 | [ADR-021](./ADR-021-node-vocabulary-coordinated-migration.md) | hub 語彙の node 移行 — VP 命名エピックへの協調追随（W2 一斉切替・`nd_` prefix・spec rename） | Accepted | 2026-07-27 | ADR-020/018/011/019, VP v0.56.0 PR #939 |
 | [ADR-022](./ADR-022-db-connection-url-remote-surrealdb.md) | DB 接続を URL 化し、本番は remote SurrealDB へ（Studio 直結） | Accepted | 2026-10-06 | supersedes ADR-016 DB 節 |
+| [ADR-023](./ADR-023-creo-id-hub-apps-layering.md) | Creo ID / Chronista Hub / 各アプリの分担 — アプリを作るたびにアカウントを増やさない | Proposed | 2026-10-08 | supersedes ADR-002 の handle claim 部分 / ADR-008/009/010/013/019/020 |
