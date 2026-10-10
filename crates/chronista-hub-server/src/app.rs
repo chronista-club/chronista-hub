@@ -518,10 +518,22 @@ async fn me(State(st): State<AppState>, headers: HeaderMap) -> Result<Response, 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PatchMeRequest {
-    display_name: Option<String>,
+    /// 無ければ触らない、 `null` か空なら消す、 文字列なら置き換える
+    #[serde(default, deserialize_with = "double_option")]
+    display_name: Option<Option<String>>,
+}
+
+/// JSON の「field が無い」と「`null`」を分けて受ける (`Option<Option<T>>`)。
+fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 /// 呼び名 (display_name) を変える。 自由文字列、 一意ではない、 空白だけは空と同じ。
+/// field を送らなければ触らない (PATCH の意味)。
 async fn patch_me(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -537,15 +549,17 @@ async fn patch_me(
         Ok(r) => r,
         Err(_) => return bad("invalid JSON (only displayName is accepted)"),
     };
-    let display_name = req
-        .display_name
+    let u = st.storage.ensure_user(&sub).await?;
+    let Some(display_name) = req.display_name else {
+        return Ok(Json(me_view(&u)).into_response());
+    };
+    let display_name = display_name
         .as_deref()
         .map(str::trim)
         .filter(|d| !d.is_empty());
     if display_name.is_some_and(|d| d.chars().count() > 80) {
         return bad("displayName must be 80 characters or fewer");
     }
-    let u = st.storage.ensure_user(&sub).await?;
     match st.storage.set_display_name(&u.usr_id, display_name).await? {
         Some(u) => Ok(Json(me_view(&u)).into_response()),
         None => Err(anyhow::anyhow!("user row vanished during patch_me").into()),
@@ -553,6 +567,7 @@ async fn patch_me(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ClaimRequest {
     handle: Option<String>,
 }

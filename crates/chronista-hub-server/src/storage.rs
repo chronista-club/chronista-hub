@@ -359,7 +359,12 @@ impl Storage {
             .await?
             .check();
         match updated {
-            Ok(_) => Ok(self.get_user_by_handle(handle).await?),
+            // WHERE に合わなければ UPDATE は何もせず成功する。 自分の行を引き直して、
+            // 要求した handle が本当に付いたときだけ返す (他人の行は決して返さない)
+            Ok(_) => Ok(self
+                .get_user_by_id(usr_id)
+                .await?
+                .filter(|u| u.handle.as_deref() == Some(handle))),
             Err(e) if is_unique_violation(&e) => {
                 tracing::info!(handle, "claim_handle: lost the race on the unique index");
                 Ok(None)

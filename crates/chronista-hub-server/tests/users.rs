@@ -98,6 +98,90 @@ async fn me_needs_a_user_token() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+async fn fresh_db() -> chronista_hub_server::db::Db {
+    let db = connect_mem("chronista", "hub").await.unwrap();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    run_pending_migrations(&db, &dir).await.unwrap();
+    db
+}
+
+#[tokio::test]
+async fn app_tokens_and_product_tokens_are_not_users() {
+    // 名簿は人のもの。 app-token (x-app-token) でも product-token (cht_…) でも入れない
+    let db = fresh_db().await;
+    let pt = ProductTokenStore::new(db.clone());
+    let issued = pt.issue("creo-memories", &[], None, None).await.unwrap();
+    let r = build_router(AppState {
+        storage: Storage::new(db.clone()),
+        event_log: EventLog::new(db.clone()),
+        verifier: Arc::new(StubVerifier),
+        product_tokens: pt,
+        admin_key: None,
+        issuer: "https://id.creo-memories.in/".into(),
+        service: "chronista-hub".into(),
+        version: "0.0.1".into(),
+    });
+    let req = Request::builder()
+        .uri("/v1/me")
+        .header("x-app-token", "app:creo-memories:register_resource")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = send(&r, req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let req = Request::builder()
+        .uri("/v1/me")
+        .header("authorization", format!("Bearer {}", issued.token))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = send(&r, req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_lost_claim_never_returns_someone_elses_row() {
+    // storage 直: UPDATE の WHERE に合わなかったとき (自分が既に別の handle を持つ、
+    // 事前チェックの後に他人が取った) に、 その handle の持ち主の行を返してはいけない
+    let st = Storage::new(fresh_db().await);
+    let mito = st.ensure_user(MITO).await.unwrap();
+    let mako = st.ensure_user(MAKO).await.unwrap();
+    assert!(
+        st.claim_handle(&mako.usr_id, "foo")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        st.claim_handle(&mito.usr_id, "foo")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        st.claim_handle(&mito.usr_id, "bar")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let again = st.claim_handle(&mito.usr_id, "baz").await.unwrap();
+    assert!(again.is_none(), "{again:?}");
+    let me = st.get_user_by_id(&mito.usr_id).await.unwrap().unwrap();
+    assert_eq!(me.handle.as_deref(), Some("bar"));
+    assert_eq!(me.creo_sub.as_deref(), Some(MITO));
+}
+
+#[tokio::test]
+async fn concurrent_first_contact_converges_on_one_row() {
+    let st = Storage::new(fresh_db().await);
+    let (a, b, c) = tokio::join!(
+        st.ensure_user(MITO),
+        st.ensure_user(MITO),
+        st.ensure_user(MITO)
+    );
+    let (a, b, c) = (a.unwrap(), b.unwrap(), c.unwrap());
+    assert_eq!(a.usr_id, b.usr_id);
+    assert_eq!(b.usr_id, c.usr_id);
+}
+
 #[tokio::test]
 async fn first_contact_puts_me_on_the_roster_without_a_handle() {
     let r = router().await;
@@ -137,7 +221,14 @@ async fn display_name_can_be_set_before_claiming_a_handle() {
     let (status, v) = patch_me(&r, MAKO, json!({ "displayName": "みと" })).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 
-    // 空にもできる。 空白だけは空と同じ
+    // field を送らなければ触らない (PATCH の意味)
+    let (status, v) = patch_me(&r, MITO, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["displayName"], "みと");
+    // null で消せる。 空白だけは空と同じ
+    let (_, v) = patch_me(&r, MITO, json!({ "displayName": null })).await;
+    assert!(v["displayName"].is_null(), "{v}");
+    patch_me(&r, MITO, json!({ "displayName": "みと" })).await;
     let (_, v) = patch_me(&r, MITO, json!({ "displayName": "  " })).await;
     assert!(v["displayName"].is_null(), "{v}");
     // 長すぎは 400、 未知の field も 400
@@ -260,6 +351,13 @@ async fn handle_must_match_the_pattern() {
     }
     let (status, v) = claim(&r, Some(MITO), json!({})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    let (status, v) = claim(
+        &r,
+        Some(MITO),
+        json!({ "handle": "mito", "displayName": "x" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unknown field → {v}");
     // 大文字は小文字に正規化して受ける
     let (status, v) = claim(&r, Some(MITO), json!({ "handle": "Mito" })).await;
     assert_eq!(status, StatusCode::CREATED, "{v}");

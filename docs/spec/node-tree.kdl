@@ -577,8 +577,10 @@ phase-scoping {
 // ============================================================================
 
 resource-type "user" {
+    // ADR-023 D3: 行を作るのも handle を持つのも Hub。 誰かであること (email / 認証) だけ Creo ID
+    // slug は handle を claim した行にだけ付く。 claim 前の行は usr_id でしか指せない
     slug "@{handle}"
-    ownership "creo-id"
+    ownership "hub"
 
     payload {
         // 裁定 2026-10-09: 行は初回接触で作り、 handle は「必要になったときに claim する」。
