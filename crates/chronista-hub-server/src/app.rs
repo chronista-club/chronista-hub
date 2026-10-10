@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::{AuthError, PrincipalKind, Verifier, authenticate};
+use crate::config::SettingsConfig;
 use crate::event_log::EventLog;
 use crate::model::{AppEntry, AppStatus, Visibility, canonical_handle, validate_envelope};
 use crate::product_token::ProductTokenStore;
@@ -28,6 +29,8 @@ pub struct AppState {
     pub admin_key: Option<String>,
     /// Creo ID の issuer (`iss`)。`/start` が来た人の発行元と突き合わせる (ADR-023)。
     pub issuer: String,
+    /// `/settings` がブラウザでログインするための公開値。 None なら `/settings` は 503。
+    pub settings: Option<SettingsConfig>,
     pub service: String,
     pub version: String,
 }
@@ -58,6 +61,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(root))
         .route("/health", get(health))
         .route("/start", get(crate::start::start))
+        .route("/settings", get(crate::settings::settings))
         .route("/v1/tree/{handle}", get(tree_by_handle))
         .route("/v1/tree/{handle}/{*path}", get(tree_by_path))
         .route("/v1/resources/{id}", get(resource_by_id))

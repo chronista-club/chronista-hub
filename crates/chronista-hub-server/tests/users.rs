@@ -35,6 +35,7 @@ async fn router() -> axum::Router {
         product_tokens: ProductTokenStore::new(db),
         admin_key: None,
         issuer: "https://id.creo-memories.in/".into(),
+        settings: None,
         service: "chronista-hub".into(),
         version: "0.0.1".into(),
     })
@@ -118,6 +119,7 @@ async fn app_tokens_and_product_tokens_are_not_users() {
         product_tokens: pt,
         admin_key: None,
         issuer: "https://id.creo-memories.in/".into(),
+        settings: None,
         service: "chronista-hub".into(),
         version: "0.0.1".into(),
     });

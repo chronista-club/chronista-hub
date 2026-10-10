@@ -93,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
         product_tokens,
         admin_key: cfg.auth.admin_key.clone(),
         issuer: cfg.auth.issuer.clone(),
+        settings: cfg.auth.settings.clone(),
         service: SERVICE_NAME.to_string(),
         version: VERSION.to_string(),
     };
