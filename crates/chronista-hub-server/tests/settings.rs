@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use chronista_hub_server::app::{AppState, SettingsConfig, build_router};
+use chronista_hub_server::app::{AppState, build_router};
 use chronista_hub_server::auth::StubVerifier;
+use chronista_hub_server::config::SettingsConfig;
 use chronista_hub_server::db::{connect_mem, run_pending_migrations};
 use chronista_hub_server::event_log::EventLog;
 use chronista_hub_server::product_token::ProductTokenStore;
@@ -82,6 +83,23 @@ async fn settings_page_carries_what_the_browser_needs_to_log_in() {
     assert!(body.contains("handle"));
     assert!(body.contains("Creo ID"));
     assert!(!body.to_lowercase().contains("client_secret"));
+    // CSP: inline script は hash で許可、 通信は自分と Creo ID だけ、 frame に入れない
+    let csp = headers["content-security-policy"].to_str().unwrap();
+    assert!(csp.contains("script-src 'sha256-"), "{csp}");
+    assert!(
+        csp.contains("connect-src 'self' https://id.creo-memories.in;"),
+        "{csp}"
+    );
+    assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+    // hash が本当に inline script のものか: <script>…</script> の中身を取って自分で計算する
+    let start = body.rfind("<script>").unwrap() + "<script>".len();
+    let end = body[start..].find("</script>").unwrap() + start;
+    let js = &body[start..end];
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(js.as_bytes());
+    let expected = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, digest);
+    assert!(csp.contains(&format!("'sha256-{expected}'")), "{csp}");
+    // ログアウトは Hub からだけ出る (Creo ID の SSO session は切らない)
+    assert!(!body.contains("v2/logout"));
 }
 
 #[tokio::test]

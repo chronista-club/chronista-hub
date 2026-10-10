@@ -13,21 +13,11 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::{AuthError, PrincipalKind, Verifier, authenticate};
+use crate::config::SettingsConfig;
 use crate::event_log::EventLog;
 use crate::model::{AppEntry, AppStatus, Visibility, canonical_handle, validate_envelope};
 use crate::product_token::ProductTokenStore;
 use crate::storage::{Storage, TreeReadOptions};
-
-/// `/settings` の Creo ID ログイン (PKCE) に要る公開値。 secret は持たない。
-#[derive(Debug, Clone)]
-pub struct SettingsConfig {
-    /// Auth0 の SPA application の client_id (公開値)
-    pub client_id: String,
-    /// Hub 自身の URL (redirect_uri = `{public_url}/settings`)
-    pub public_url: String,
-    /// token の aud。 共通の aud `https://id.anycreative.tech` (ADR-023 Q2 の A)
-    pub audience: String,
-}
 
 #[derive(Clone)]
 pub struct AppState {

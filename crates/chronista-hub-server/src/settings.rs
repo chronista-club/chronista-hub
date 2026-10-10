@@ -12,11 +12,14 @@
 //! `HUB_CLIENT_ID` が無ければ 503 (準備中)。
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
+use base64::Engine;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
-use crate::app::{AppState, SettingsConfig};
+use crate::app::AppState;
+use crate::config::SettingsConfig;
 use crate::start::{escape, html, page};
 
 pub async fn settings(State(st): State<AppState>) -> Response {
@@ -30,7 +33,24 @@ pub async fn settings(State(st): State<AppState>) -> Response {
             ),
         );
     };
-    html(StatusCode::OK, &page("設定", &body(cfg, &st.issuer)))
+    let mut resp = html(StatusCode::OK, &page("設定", &body(cfg, &st.issuer)));
+    // token を sessionStorage に置くので、 XSS と clickjacking の二重目の壁として CSP を付ける。
+    // inline script は中身が固定なので hash で許可する (nonce 不要)。 /start とは共有しない
+    if let Ok(v) = HeaderValue::from_str(&csp(&st.issuer)) {
+        resp.headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+    resp
+}
+
+/// `/settings` の Content-Security-Policy。 script は `JS` の sha256 だけ、 通信は自分と Creo ID だけ。
+fn csp(issuer: &str) -> String {
+    let hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(JS.as_bytes()));
+    let origin = issuer.trim_end_matches('/');
+    format!(
+        "default-src 'none'; script-src 'sha256-{hash}'; style-src 'unsafe-inline'; \
+         connect-src 'self' {origin}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    )
 }
 
 fn body(cfg: &SettingsConfig, issuer: &str) -> String {
@@ -83,12 +103,10 @@ const JS: &str = r#"
     location.assign(u);
   }
 
-  function logout() {
-    SS.removeItem(K.at); SS.removeItem(K.idt);
-    const u = new URL('v2/logout', cfg.issuer);
-    u.search = new URLSearchParams({ client_id: cfg.clientId, returnTo: cfg.redirectUri });
-    location.assign(u);
-  }
+  // Hub からだけ出る。 Creo ID の SSO session (家族のアプリ全部) までは切らない
+  function logout() { forget(); render('ログアウトしました'); }
+  function forget() { SS.removeItem(K.at); SS.removeItem(K.idt); }
+  class Unauthorized extends Error {}
 
   async function exchange(code, state) {
     const verifier = SS.getItem(K.v), expected = SS.getItem(K.s);
@@ -108,7 +126,7 @@ const JS: &str = r#"
       method, headers: { authorization: 'Bearer ' + SS.getItem(K.at), ...(body ? { 'content-type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
-    if (res.status === 401) { SS.removeItem(K.at); SS.removeItem(K.idt); render(); throw new Error('ログインの期限が切れました。もう一度ログインしてください。'); }
+    if (res.status === 401) { forget(); throw new Unauthorized('ログインの期限が切れました。もう一度ログインしてください。'); }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || ('エラー (' + res.status + ')'));
     return data;
@@ -135,30 +153,33 @@ const JS: &str = r#"
         <p class="note">利用者 ID: <code>${esc(me.usrId)}</code></p>
         <button id="logout" class="secondary">ログアウト</button></section>`;
     const claim = document.getElementById('claim');
-    if (claim) claim.onsubmit = async (e) => { e.preventDefault(); try { const h = new FormData(claim).get('handle').trim().toLowerCase(); view(await api('PUT', '/v1/me/handle', { handle: h }), '@' + h + ' を claim しました'); } catch (err) { view(me, err.message); } };
-    document.getElementById('name').onsubmit = async (e) => { e.preventDefault(); try { const n = new FormData(e.target).get('displayName'); view(await api('PATCH', '/v1/me', { displayName: n.trim() === '' ? null : n }), '呼び名を保存しました'); } catch (err) { view(me, err.message); } };
+    const fail = (err) => (err instanceof Unauthorized ? render(err.message) : view(me, err.message));
+    if (claim) claim.onsubmit = async (e) => { e.preventDefault(); try { const h = new FormData(claim).get('handle').trim().toLowerCase(); view(await api('PUT', '/v1/me/handle', { handle: h }), '@' + h + ' を claim しました'); } catch (err) { fail(err); } };
+    document.getElementById('name').onsubmit = async (e) => { e.preventDefault(); try { const n = new FormData(e.target).get('displayName'); view(await api('PATCH', '/v1/me', { displayName: n.trim() === '' ? null : n }), '呼び名を保存しました'); } catch (err) { fail(err); } };
     document.getElementById('logout').onclick = logout;
   }
 
-  async function render() {
+  // msg があれば一番上に出す (ログインの失敗、 期限切れ、 ログアウト)
+  async function render(msg) {
     if (!SS.getItem(K.at)) {
-      app.innerHTML = `<p>家族のアプリで共通の handle と呼び名を設定します。</p><button id="login">Creo ID でログイン</button>`;
+      app.innerHTML = `${msg ? `<p class="msg">${esc(msg)}</p>` : ''}<p>家族のアプリで共通の handle と呼び名を設定します。</p><button id="login">Creo ID でログイン</button>`;
       document.getElementById('login').onclick = login;
       return;
     }
-    try { view(await api('GET', '/v1/me')); } catch (err) { app.innerHTML = `<p class="msg">${esc(err.message)}</p>`; }
+    try { view(await api('GET', '/v1/me'), msg); } catch (err) { err instanceof Unauthorized ? render(err.message) : (app.innerHTML = `<p class="msg">${esc(err.message)}</p>`); }
   }
 
   (async () => {
     const q = new URLSearchParams(location.search);
+    let msg;
     if (q.has('code')) {
-      try { await exchange(q.get('code'), q.get('state')); } catch (err) { app.innerHTML = `<p class="msg">${esc(err.message)}</p>`; }
+      try { await exchange(q.get('code'), q.get('state')); } catch (err) { msg = err.message; }
       history.replaceState(null, '', location.pathname);
     } else if (q.has('error')) {
-      app.innerHTML = `<p class="msg">${esc(q.get('error_description') || q.get('error'))}</p>`;
+      msg = q.get('error_description') || q.get('error');
       history.replaceState(null, '', location.pathname);
     }
-    await render();
+    await render(msg);
   })();
 })();
 "#;

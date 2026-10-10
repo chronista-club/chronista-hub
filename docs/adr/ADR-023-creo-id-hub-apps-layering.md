@@ -196,7 +196,9 @@ mako の裁定（原文）: 「hub.chronista.club(relashionship) + id.creo-memor
 - token の aud は共通の `https://id.anycreative.tech`（Q2 の A）。scope は `openid profile email`。token はブラウザの sessionStorage にだけ置き、Hub は cookie も session も持たない
 - env: `HUB_CLIENT_ID` / `HUB_PUBLIC_URL` / `HUB_LOGIN_AUDIENCE`。client_id が無ければ `/settings` は 503（準備中）
 - 「必要になったときに claim する」の誘導先はこの画面。アプリは `GET /v1/me` の `handle` が null なら `https://hub.chronista.club/settings` へ送る
-- Auth0 側の作業（tenant 共通、D4 により mako の判断で記録はここ）: application「Chronista Hub」（Single Page Application）、Allowed Callback URLs / Allowed Logout URLs / Allowed Web Origins = `https://hub.chronista.club`（開発時は `http://localhost:3000` も）、共通 API `https://id.anycreative.tech` を許可
+- Auth0 側（tenant 共通、D4 により mako の判断で記録はここ。2026-10-11 に作成済み）: application「Creo ID — Chronista Hub」（Single Page Application、`token_endpoint_auth_method: none`、grant は authorization_code と refresh_token）、client_id `y6wG9SkSBGOBOCiTohQKsiaM3HCkfNil`（公開値）。Allowed Callback URLs / Allowed Logout URLs = `https://hub.chronista.club/settings` と `http://localhost:3000/settings`（Auth0 は path まで完全一致で見る）、Allowed Web Origins = `https://hub.chronista.club` と `http://localhost:3000`。first-party なので共通 API `https://id.anycreative.tech` の token は同意画面なしで取れる
+- ログアウトは Hub からだけ出る（sessionStorage を消す）。Creo ID の SSO session（家族のアプリ全部）は切らない
+- CSP: `script-src` は inline script の sha256、`connect-src` は自分と Creo ID、`frame-ancestors 'none'`（claim は取り消せないので clickjacking に入れない）
 
 ## References
 
