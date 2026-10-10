@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::auth::{AuthError, PrincipalKind, Verifier, authenticate};
 use crate::event_log::EventLog;
-use crate::model::{AppEntry, AppStatus, Visibility, validate_envelope};
+use crate::model::{AppEntry, AppStatus, Visibility, canonical_handle, validate_envelope};
 use crate::product_token::ProductTokenStore;
 use crate::storage::{Storage, TreeReadOptions};
 
@@ -62,6 +62,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/tree/{handle}/{*path}", get(tree_by_path))
         .route("/v1/resources/{id}", get(resource_by_id))
         .route("/v1/apps", get(list_apps))
+        // --- 利用者の名簿 (ADR-023 D3): 本人は user-jwt、 公開は handle ---
+        .route("/v1/me", get(me).patch(patch_me))
+        .route("/v1/me/handle", axum::routing::put(claim_handle))
+        .route("/v1/users/{handle}", get(user_by_handle))
         .route("/v1/apps/{app_id}/manifest", get(app_manifest))
         .route("/v1/events", post(post_events))
         // --- admin (X-Admin-Key 必須、 HUB_ADMIN_KEY 未設定なら全て 404) ---
@@ -470,4 +474,162 @@ fn is_https_url(s: &str) -> bool {
     };
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
     !host.is_empty() && !s.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+// ============================================================
+// 利用者の名簿と handle (ADR-023 D3、 ADR-002 / 008 / 012 の規則)
+// ============================================================
+
+/// Bearer の user-jwt から Creo ID の `sub` を取る。 無ければ 401。
+async fn require_user(st: &AppState, headers: &HeaderMap) -> Result<String, Box<Response>> {
+    let bearer = headers.get("authorization").and_then(|v| v.to_str().ok());
+    match authenticate(
+        st.verifier.as_ref(),
+        None,
+        bearer,
+        None,
+        &[PrincipalKind::User],
+        &[],
+    )
+    .await
+    {
+        Ok(crate::auth::Principal::User { user_id, .. }) => Ok(user_id),
+        _ => Err(Box::new(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response(),
+        )),
+    }
+}
+
+/// 自分の行。 初回接触ならここで名簿に載せて `usr_id` を振る (裁定 2026-10-09)。
+/// handle は claim するまで null。
+async fn me(State(st): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
+    let sub = match require_user(&st, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return Ok(*resp),
+    };
+    let u = st.storage.ensure_user(&sub).await?;
+    Ok(Json(me_view(&u)).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PatchMeRequest {
+    display_name: Option<String>,
+}
+
+/// 呼び名 (display_name) を変える。 自由文字列、 一意ではない、 空白だけは空と同じ。
+async fn patch_me(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let sub = match require_user(&st, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return Ok(*resp),
+    };
+    let bad =
+        |msg: &str| Ok((StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response());
+    let req: PatchMeRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => return bad("invalid JSON (only displayName is accepted)"),
+    };
+    let display_name = req
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    if display_name.is_some_and(|d| d.chars().count() > 80) {
+        return bad("displayName must be 80 characters or fewer");
+    }
+    let u = st.storage.ensure_user(&sub).await?;
+    match st.storage.set_display_name(&u.usr_id, display_name).await? {
+        Some(u) => Ok(Json(me_view(&u)).into_response()),
+        None => Err(anyhow::anyhow!("user row vanished during patch_me").into()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaimRequest {
+    handle: Option<String>,
+}
+
+/// handle の claim。 早い者勝ち、 1 回決めたら固定 (rename は次の段、 ADR-002 の方針で)。
+/// 予約名 (migration 004) と使用中は 409。 同じ handle をもう一度は 200 で冪等。
+/// 名簿にまだ居なければ (アプリが `/v1/me` を経ずに来た)、 載せてから claim する。
+async fn claim_handle(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let sub = match require_user(&st, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return Ok(*resp),
+    };
+    let req: ClaimRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid JSON" })),
+            )
+                .into_response());
+        }
+    };
+    let Some(handle) = req.handle.as_deref().and_then(canonical_handle) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "handle must match ^[a-z0-9][a-z0-9-]{0,30}$" })),
+        )
+            .into_response());
+    };
+    let conflict =
+        |msg: &str| Ok((StatusCode::CONFLICT, Json(json!({ "error": msg }))).into_response());
+    let mine = st.storage.ensure_user(&sub).await?;
+    if let Some(current) = &mine.handle {
+        if *current == handle {
+            return Ok(Json(me_view(&mine)).into_response());
+        }
+        return conflict("handle already claimed by you; rename is not available yet");
+    }
+    match st.storage.claim_handle(&mine.usr_id, &handle).await? {
+        Some(u) => {
+            tracing::info!(handle, usr_id = %u.usr_id, "handle claimed");
+            Ok((StatusCode::CREATED, Json(me_view(&u))).into_response())
+        }
+        None => conflict("handle is taken or reserved"),
+    }
+}
+
+fn me_view(u: &crate::model::UserEntry) -> serde_json::Value {
+    json!({
+        "usrId": u.usr_id,
+        "handle": u.handle,
+        "displayName": u.display_name,
+        "canonicalPath": u.canonical_path(),
+        "creoSub": u.creo_sub,
+    })
+}
+
+/// 公開の行 (ADR-008 の 2 軸: usr_id と handle)。 `@` は任意、 大文字は小文字へ寄せる。
+/// 予約名の行は利用者ではないので 404。
+async fn user_by_handle(
+    State(st): State<AppState>,
+    Path(handle): Path<String>,
+) -> Result<Response, AppError> {
+    let not_found =
+        || Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response());
+    let Some(h) = canonical_handle(strip_handle(&handle)) else {
+        return not_found();
+    };
+    match st.storage.get_user_by_handle(&h).await? {
+        Some(u) if u.account_type == "user" => match u.public() {
+            Some(p) => Ok(Json(p).into_response()),
+            None => not_found(),
+        },
+        _ => not_found(),
+    }
 }

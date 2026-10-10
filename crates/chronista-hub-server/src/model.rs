@@ -76,6 +76,65 @@ pub struct AppEntry {
     pub status: AppStatus,
 }
 
+/// 利用者の名簿の 1 行 (`user` table、 ADR-023 D3)。 本人向け (`/v1/me`) の形。
+///
+/// 裁定 2026-10-09: 行は初回接触で作り、 handle は「必要になったときに claim する」。
+/// だから `handle` は claim までは `None`。 鍵はいつでも `usr_id`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserEntry {
+    /// Hub が振る EntId (`usr_…`、 ADR-008 の stable key)
+    pub usr_id: String,
+    /// 住所 (unique)。 claim するまで無い
+    pub handle: Option<String>,
+    /// 呼び名。 自由文字列で一意ではない
+    pub display_name: Option<String>,
+    /// Creo ID の `sub`。 公開の形 (`PublicUser`) には出さない
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creo_sub: Option<String>,
+    pub account_type: String,
+}
+
+impl UserEntry {
+    /// `/@{handle}` (ADR-012 の canonical path)。 handle が無ければ無い
+    pub fn canonical_path(&self) -> Option<String> {
+        self.handle.as_ref().map(|h| format!("/@{h}"))
+    }
+
+    /// 公開の形。 handle を claim した利用者だけが公開の住所を持つ
+    pub fn public(&self) -> Option<PublicUser> {
+        let handle = self.handle.clone()?;
+        Some(PublicUser {
+            usr_id: self.usr_id.clone(),
+            canonical_path: format!("/@{handle}"),
+            handle,
+            display_name: self.display_name.clone(),
+        })
+    }
+}
+
+/// 誰にでも見せてよい利用者の形 (`GET /v1/users/@{handle}`)。 ADR-008 の 2 軸併載。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicUser {
+    pub usr_id: String,
+    pub handle: String,
+    pub display_name: Option<String>,
+    pub canonical_path: String,
+}
+
+/// handle の形 (spec `handle-pattern`、 ADR-002 / 012): `^[a-z0-9][a-z0-9-]{0,30}$`。
+/// 大文字は小文字に正規化してから見る (lowercase canonical)。
+pub fn canonical_handle(input: &str) -> Option<String> {
+    let h = input.trim().to_ascii_lowercase();
+    let mut chars = h.bytes();
+    let first_ok = chars
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    let rest_ok = chars.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    (first_ok && rest_ok && h.len() <= 31).then_some(h)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
     #[serde(rename = "resource.created")]

@@ -581,9 +581,13 @@ resource-type "user" {
     ownership "creo-id"
 
     payload {
-        field "handle"       string required=#true pattern=#"^[a-z0-9][a-z0-9-]{0,30}$"#
-        field "email"        string required=#true description="個人なら user email、 org なら管理 email"
-        field "display_name" string
+        // 裁定 2026-10-09: 行は初回接触で作り、 handle は「必要になったときに claim する」。
+        // 鍵は Hub が振る usr_id、 handle は住所 (unique)、 display_name は呼び名 (一意ではない)
+        field "usr_id"       string description="Hub が振る EntId (usr_…)、 ADR-008 の stable key。 record id と同じ値。 予約名の行には無い"
+        field "handle"       string pattern=#"^[a-z0-9][a-z0-9-]{0,30}$"# description="住所 (unique)。 claim するまで無い (ADR-023 D3)"
+        field "creo_sub"     string description="Creo ID の sub。 本人だけに見せる。 予約名の行には無い"
+        field "email"        string description="個人なら user email、 org なら管理 email。 本物の利用者は持たない (Creo ID が持つ、 ADR-023 D1)"
+        field "display_name" string description="呼び名。 自由文字列で一意ではない"
         field "avatar_url"   string
         field "bio"          string
         field "locale"       string default="ja"

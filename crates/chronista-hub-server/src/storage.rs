@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::db::Db;
-use crate::model::{AppEntry, AppManifest, AppStatus, Resource, Visibility};
+use crate::model::{AppEntry, AppManifest, AppStatus, Resource, UserEntry, Visibility};
 
 /// REST の未認証 tree/resource read で **vp-node (federation registry) の非 public を
 /// 隠す** guard (ADR-020 §S5)。 owner/visibility 分離は Unison `nodes.Discover` が
@@ -284,6 +284,119 @@ impl Storage {
         Ok(())
     }
 
+    /// Creo ID の `sub` で利用者の行を引く。 まだ無ければ None。
+    pub async fn get_user_by_sub(&self, sub: &str) -> anyhow::Result<Option<UserEntry>> {
+        let rows: Vec<Value> = self
+            .db
+            .query("SELECT * OMIT id FROM user WHERE creo_sub = $sub LIMIT 1")
+            .bind(("sub", sub.to_string()))
+            .await?
+            .take(0)?;
+        rows_to_users(rows).map(|v| v.into_iter().next())
+    }
+
+    /// 初回接触 (`/v1/me`): `sub` の行が無ければ `usr_` EntId を振って作る (裁定 2026-10-09)。
+    /// handle は空のまま。 同時に 2 回来ても `creo_sub` の unique index で 1 行に収束する。
+    pub async fn ensure_user(&self, sub: &str) -> anyhow::Result<UserEntry> {
+        if let Some(u) = self.get_user_by_sub(sub).await? {
+            return Ok(u);
+        }
+        let usr_id = new_usr_id();
+        let created = self
+            .db
+            .query(
+                "CREATE type::record('user', $usr_id) CONTENT {
+                    usr_id: $usr_id, creo_sub: $sub, account_type: 'user', locale: 'ja'
+                }",
+            )
+            .bind(("usr_id", usr_id.clone()))
+            .bind(("sub", sub.to_string()))
+            .await?
+            .check();
+        match created {
+            Ok(_) => tracing::info!(usr_id, "user joined the roster"),
+            Err(e) if is_unique_violation(&e) => {
+                tracing::info!("ensure_user: lost the race on creo_sub, reusing the row");
+            }
+            Err(e) => return Err(e.into()),
+        }
+        self.get_user_by_sub(sub)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("user row vanished right after ensure_user"))
+    }
+
+    /// handle で利用者の行を引く。 予約名 (account_type = reserved) の行も返す —
+    /// 公開するかは呼び出し側が `account_type` で決める。
+    pub async fn get_user_by_handle(&self, handle: &str) -> anyhow::Result<Option<UserEntry>> {
+        let rows: Vec<Value> = self
+            .db
+            .query("SELECT * OMIT id FROM user WHERE handle = $handle LIMIT 1")
+            .bind(("handle", handle.to_string()))
+            .await?
+            .take(0)?;
+        rows_to_users(rows).map(|v| v.into_iter().next())
+    }
+
+    /// handle を claim する (ADR-023 D3、 早い者勝ち)。 handle は正規化済みの前提。
+    /// 取られていれば `Ok(None)`。 同時に来た 2 人は handle の unique index が片方を弾く。
+    /// 既に handle を持つ行には触らない (rename は次の段)。
+    pub async fn claim_handle(
+        &self,
+        usr_id: &str,
+        handle: &str,
+    ) -> anyhow::Result<Option<UserEntry>> {
+        if self.get_user_by_handle(handle).await?.is_some() {
+            return Ok(None);
+        }
+        let updated = self
+            .db
+            .query(
+                "UPDATE type::record('user', $usr_id) SET handle = $handle
+                 WHERE handle = NONE AND account_type = 'user'",
+            )
+            .bind(("usr_id", usr_id.to_string()))
+            .bind(("handle", handle.to_string()))
+            .await?
+            .check();
+        match updated {
+            Ok(_) => Ok(self.get_user_by_handle(handle).await?),
+            Err(e) if is_unique_violation(&e) => {
+                tracing::info!(handle, "claim_handle: lost the race on the unique index");
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// `usr_id` で利用者の行を引く。
+    pub async fn get_user_by_id(&self, usr_id: &str) -> anyhow::Result<Option<UserEntry>> {
+        let rows: Vec<Value> = self
+            .db
+            .query("SELECT * OMIT id FROM user WHERE usr_id = $usr_id LIMIT 1")
+            .bind(("usr_id", usr_id.to_string()))
+            .await?
+            .take(0)?;
+        rows_to_users(rows).map(|v| v.into_iter().next())
+    }
+
+    /// 呼び名を変える。 `None` で消す。
+    pub async fn set_display_name(
+        &self,
+        usr_id: &str,
+        display_name: Option<&str>,
+    ) -> anyhow::Result<Option<UserEntry>> {
+        self.db
+            .query(
+                "UPDATE type::record('user', $usr_id) SET display_name = $display_name
+                 WHERE account_type = 'user'",
+            )
+            .bind(("usr_id", usr_id.to_string()))
+            .bind(("display_name", display_name.map(str::to_string)))
+            .await?
+            .check()?;
+        self.get_user_by_id(usr_id).await
+    }
+
     pub async fn upsert_resource(&self, resource: &Resource) -> anyhow::Result<()> {
         let row = ResourceRow::from_resource(resource);
         self.db
@@ -466,6 +579,54 @@ fn rows_to_resources(rows: Vec<Value>) -> anyhow::Result<Vec<Resource>> {
                 .map_err(anyhow::Error::from)
         })
         .collect()
+}
+
+/// `user` table の行 (column 名は spec の snake_case)。 予約名の行は usr_id / creo_sub が無い。
+#[derive(Debug, Deserialize)]
+struct UserRow {
+    #[serde(default)]
+    usr_id: Option<String>,
+    #[serde(default)]
+    handle: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    creo_sub: Option<String>,
+    account_type: String,
+}
+
+fn rows_to_users(rows: Vec<Value>) -> anyhow::Result<Vec<UserEntry>> {
+    rows.into_iter()
+        .map(|v| {
+            let r: UserRow = serde_json::from_value(v)?;
+            Ok(UserEntry {
+                // 予約名の行には usr_id が無い。 公開もしないので空で持つ
+                usr_id: r.usr_id.unwrap_or_default(),
+                handle: r.handle,
+                display_name: r.display_name,
+                creo_sub: r.creo_sub,
+                account_type: r.account_type,
+            })
+        })
+        .collect()
+}
+
+/// SurrealDB の unique index 違反 ("Database index `…` already contains …")。
+fn is_unique_violation(e: &surrealdb::Error) -> bool {
+    e.to_string().contains("already contains")
+}
+
+/// `usr_` EntId を振る (ADR-008)。 base58 の 16 文字 (約 94 bit)。
+fn new_usr_id() -> String {
+    use rand::RngCore;
+    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut bytes = [0u8; 16];
+    rand::rng().fill_bytes(&mut bytes);
+    let body: String = bytes
+        .iter()
+        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .collect();
+    format!("usr_{body}")
 }
 
 /// options から WHERE 追加句 + LIMIT 文字列を組む。
