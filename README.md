@@ -30,8 +30,8 @@ id.creo-memories.in     各 product
 
 ## Status
 
-2026-10-09 時点で live（`hub.chronista.club`、v0.8.0）が実際に担っているのは **VP の node registry と federation（Unison / QUIC）**、Auth0 のやり直し先 `/start`、アプリの名簿の段階 1（管理者が登録し、`/start` と `GET /v1/apps` が読む）、利用者の名簿と handle の claim（`GET /v1/me` で名簿に載り、`PUT /v1/me/handle` で必要になったときに claim、`GET /v1/users/@{handle}` が公開）。
-その設定画面 `/settings`（Creo ID に PKCE でログインし、handle と呼び名を自分で変える）は v0.9.0 で入る。handle の rename・organization・`/@{handle}` のページ・Creo Memories との同期はまだ無い。
+2026-10-11 時点で live（`hub.chronista.club`、v0.9.0）が実際に担っているのは **VP の node registry と federation（Unison / QUIC）**、Auth0 のやり直し先 `/start`、アプリの名簿の段階 1（管理者が登録し、`/start` と `GET /v1/apps` が読む）、利用者の名簿と handle の claim（`GET /v1/me` で名簿に載り、`PUT /v1/me/handle` で必要になったときに claim、`GET /v1/users/@{handle}` が公開）、その設定画面 `/settings`（Creo ID に PKCE でログインし、handle と呼び名を自分で変える）。
+handle の rename・organization・`/@{handle}` のページ・Creo Memories との同期はまだ無い。
 機能ごとの現状と、Creo ID / Hub / 各アプリの分担は [ADR-023](docs/adr/ADR-023-creo-id-hub-apps-layering.md) を参照。
 
 Linear 時代の Phase 1-1〜1-4（AC-14〜17: registry / tree read / event 取り込み / Creo ID JWKS 認証）はコードとしては揃っている。
