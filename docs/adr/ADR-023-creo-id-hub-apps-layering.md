@@ -127,6 +127,7 @@ README の Phase 表は Linear 時代（AC-14〜18）のままだったので、
 | events の取り込み（`POST /v1/events`） | 動くが**使われていない** | 発行済みの product-token は 0 件。取り込まれた event も 0 件 |
 | アプリの名簿（ADR-009） | **無い** → v0.7.0 で段階 1 | 管理 API で登録し、`/start` と `GET /v1/apps` が読む。manifest の取得は段階 2（ADR-009 の 2026-10-09 追記） |
 | 利用者の名簿・handle の claim | **無い** → v0.8.0 で claim まで | `GET /v1/me` で名簿に載り `usr_` EntId が付く。`PUT /v1/me/handle` で claim、`GET /v1/users/@{handle}` が公開（2026-10-09 追記）。rename はまだ |
+| 設定画面（handle と呼び名） | **無い** → v0.9.0 で `/settings` | Creo ID に PKCE でログインして `/v1/me` を叩く 1 枚（2026-10-11 追記）。Auth0 の SPA client が要る |
 | organization（ADR-013） | **無い** | spec 上の予約のみ |
 | `/@{handle}` のページ | **無い** | `hub.` も apex も 404 |
 | apex `chronista.club` | 静的な portal（Cloudflare） | Hub への proxy は無い |
@@ -184,7 +185,18 @@ mako の裁定（原文）: 「Hubで。」「display_nameをuniqueに出来る�
 - **handle は「必要になったときに claim する」。** 共有・公開・@ 言及など handle が要る操作に初めて触れたとき、アプリが Hub の claim へ誘導する。初回ログインで強制しない。`PUT /v1/me/handle`、早い者勝ち、予約名（migration 004）は取れない、同じ handle の再 claim は冪等、別の handle へは変えられない（rename は ADR-002 の方針で次の段）
 - **handle は住所、display_name は呼び名。** handle は unique、display_name は自由文字列で一意にしない。`PATCH /v1/me` で claim 前でも変えられる。Creo ID の access token に `name` は無いので初期値は空
 - **公開は handle を持つ人だけ。** `GET /v1/users/@{handle}` は `usrId` / `handle` / `displayName` / `canonicalPath` だけを返す（ADR-008 の 2 軸併載）。予約名の行は 404
-- 設定の置き場: データの持ち主は分けたまま（誰か = Creo ID、つながり = Hub）、利用者向けの設定画面は Hub に 1 つ置き、アカウント側の操作は Creo ID のフローへ委譲する（構想、未実装）
+- 設定の置き場: データの持ち主は分けたまま（誰か = Creo ID、つながり = Hub）、利用者向けの設定画面は Hub に 1 つ置き、アカウント側の操作は Creo ID のフローへ委譲する → 2026-10-11 追記で実装
+
+### 2026-10-11 追記 — `/settings`（設定画面は Hub に 1 つ、v0.9.0）
+
+mako の裁定（原文）: 「hub.chronista.club(relashionship) + id.creo-memories.in(identity)でユーザの設定を分けたいんだよね。どうおもう？一箇所に纏めた方がいいかな？」→ 推奨「置き場は 2 つ、画面は 1 つ、画面の持ち主は Hub」→「で、handleってどこで確認できる？」→「OK。それで進めて」「進めよう」
+
+- **`GET /settings`** が利用者向けの設定画面。handle（claim 前なら claim のフォーム、後は表示のみ）と呼び名を自分で変える。アカウント（メール、パスワード、ログイン方法）は Creo ID の持ち物として見せるだけで、変更は Creo ID のフローへ委譲する
+- **Hub が Auth0 の SPA application を 1 つ持つ**（client_id は公開値、secret は無い、PKCE）。D2「ログインを Hub に依存させない」は変わらない。各アプリのログインは今までどおり Hub を通らず、この client は `/settings` 自身のログインにだけ使う。D5 の手順を Hub 自身にも適用した形
+- token の aud は共通の `https://id.anycreative.tech`（Q2 の A）。scope は `openid profile email`。token はブラウザの sessionStorage にだけ置き、Hub は cookie も session も持たない
+- env: `HUB_CLIENT_ID` / `HUB_PUBLIC_URL` / `HUB_LOGIN_AUDIENCE`。client_id が無ければ `/settings` は 503（準備中）
+- 「必要になったときに claim する」の誘導先はこの画面。アプリは `GET /v1/me` の `handle` が null なら `https://hub.chronista.club/settings` へ送る
+- Auth0 側の作業（tenant 共通、D4 により mako の判断で記録はここ）: application「Chronista Hub」（Single Page Application）、Allowed Callback URLs / Allowed Logout URLs / Allowed Web Origins = `https://hub.chronista.club`（開発時は `http://localhost:3000` も）、共通 API `https://id.anycreative.tech` を許可
 
 ## References
 

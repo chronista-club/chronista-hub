@@ -83,6 +83,8 @@ pub struct AuthConfig {
     pub admin_key: Option<String>,
     /// JWKS background refetch 間隔 (秒)。 ADR-010: 5 分。
     pub jwks_refresh_secs: u64,
+    /// `/settings` のブラウザログイン用 (`HUB_CLIENT_ID`)。 None なら `/settings` は 503。
+    pub settings: Option<crate::app::SettingsConfig>,
 }
 
 impl Config {
@@ -171,6 +173,22 @@ impl Config {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(300),
+                settings: std::env::var("HUB_CLIENT_ID")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .map(|client_id| crate::app::SettingsConfig {
+                        client_id,
+                        public_url: std::env::var("HUB_PUBLIC_URL")
+                            .ok()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "https://hub.chronista.club".into())
+                            .trim_end_matches('/')
+                            .to_string(),
+                        audience: std::env::var("HUB_LOGIN_AUDIENCE")
+                            .ok()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "https://id.anycreative.tech".into()),
+                    }),
             },
         })
     }

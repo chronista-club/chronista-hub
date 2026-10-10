@@ -32,6 +32,7 @@ async fn router_with(admin_key: Option<&str>) -> axum::Router {
         product_tokens: ProductTokenStore::new(db),
         admin_key: admin_key.map(String::from),
         issuer: "https://id.creo-memories.in/".into(),
+        settings: None,
         service: "chronista-hub".into(),
         version: "0.0.1".into(),
     })

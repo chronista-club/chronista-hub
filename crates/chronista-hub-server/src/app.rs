@@ -18,6 +18,17 @@ use crate::model::{AppEntry, AppStatus, Visibility, canonical_handle, validate_e
 use crate::product_token::ProductTokenStore;
 use crate::storage::{Storage, TreeReadOptions};
 
+/// `/settings` の Creo ID ログイン (PKCE) に要る公開値。 secret は持たない。
+#[derive(Debug, Clone)]
+pub struct SettingsConfig {
+    /// Auth0 の SPA application の client_id (公開値)
+    pub client_id: String,
+    /// Hub 自身の URL (redirect_uri = `{public_url}/settings`)
+    pub public_url: String,
+    /// token の aud。 共通の aud `https://id.anycreative.tech` (ADR-023 Q2 の A)
+    pub audience: String,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Storage,
@@ -28,6 +39,8 @@ pub struct AppState {
     pub admin_key: Option<String>,
     /// Creo ID の issuer (`iss`)。`/start` が来た人の発行元と突き合わせる (ADR-023)。
     pub issuer: String,
+    /// `/settings` がブラウザでログインするための公開値。 None なら `/settings` は 503。
+    pub settings: Option<SettingsConfig>,
     pub service: String,
     pub version: String,
 }
@@ -58,6 +71,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(root))
         .route("/health", get(health))
         .route("/start", get(crate::start::start))
+        .route("/settings", get(crate::settings::settings))
         .route("/v1/tree/{handle}", get(tree_by_handle))
         .route("/v1/tree/{handle}/{*path}", get(tree_by_path))
         .route("/v1/resources/{id}", get(resource_by_id))
