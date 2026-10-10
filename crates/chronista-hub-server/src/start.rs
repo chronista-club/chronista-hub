@@ -2,8 +2,9 @@
 //!
 //! Auth0 は cookie 無しでログイン画面を開いた人を、ここへ `?iss=<issuer>` 付きで送る
 //! (OIDC の third-party initiated login と同じ形)。Hub は家族のアプリの一覧を見せ、
-//! 押したアプリが自分のログインを始める。Hub は Auth0 の client を持たず、ログインの
-//! 途中にも入らない (ADR-023 D2: ログインを Hub に依存させない)。
+//! 押したアプリが自分のログインを始める。各アプリのログインの途中に Hub は入らない
+//! (ADR-023 D2: ログインを Hub に依存させない)。Hub が持つ唯一の Auth0 client は
+//! `/settings` 自身のログイン用 (ADR-023 の 2026-10-11 追記)。
 //!
 //! 一覧はアプリの名簿 (`app` table、 ADR-009 の段階 1) から引く。`login_url` を持つ active な
 //! アプリだけが並ぶ。
@@ -73,7 +74,7 @@ fn app_list(apps: &[AppEntry]) -> String {
     )
 }
 
-fn page(title: &str, body: &str) -> String {
+pub(crate) fn page(title: &str, body: &str) -> String {
     format!(
         "<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
@@ -83,15 +84,19 @@ fn page(title: &str, body: &str) -> String {
     )
 }
 
-const CSS: &str = ":root{color-scheme:light dark;--bg:#f7f7f5;--fg:#1d1d1f;--muted:#6b6b70;--card:#fff;--line:#e3e3e0;--accent:#2f5bd3}\
+pub(crate) const CSS: &str = ":root{color-scheme:light dark;--bg:#f7f7f5;--fg:#1d1d1f;--muted:#6b6b70;--card:#fff;--line:#e3e3e0;--accent:#2f5bd3}\
 @media (prefers-color-scheme:dark){:root{--bg:#141416;--fg:#ececee;--muted:#9a9aa2;--card:#1d1d21;--line:#2c2c31;--accent:#8aa8ff}}\
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,\"Hiragino Sans\",sans-serif}\
 main{max-width:28rem;margin:0 auto;padding:3rem 1rem}h1{font-size:1.4rem;margin:0 0 1rem}\
 .apps{list-style:none;padding:0;margin:1.5rem 0;display:grid;gap:.75rem}\
 .apps a{display:flex;flex-direction:column;padding:1rem;border:1px solid var(--line);border-radius:12px;background:var(--card);color:inherit;text-decoration:none}\
-.apps a:hover,.apps a:focus-visible{border-color:var(--accent)}.apps span,.note{color:var(--muted);font-size:.9rem}";
+.apps a:hover,.apps a:focus-visible{border-color:var(--accent)}.apps span,.note{color:var(--muted);font-size:.9rem}\
+section{padding:1rem;margin:1rem 0;border:1px solid var(--line);border-radius:12px;background:var(--card)}h2{font-size:1rem;margin:0 0 .5rem}\
+label{display:block;margin:.5rem 0}input{display:block;width:100%;box-sizing:border-box;margin-top:.25rem;padding:.5rem;font:inherit;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:inherit}\
+button{font:inherit;padding:.5rem 1rem;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}button.secondary{background:transparent;color:var(--accent)}\
+.msg{padding:.5rem .75rem;border-radius:8px;background:var(--card);border:1px solid var(--accent)}code{font-size:.9em}";
 
-fn html(status: StatusCode, body: &str) -> Response {
+pub(crate) fn html(status: StatusCode, body: &str) -> Response {
     (
         status,
         [
@@ -103,7 +108,7 @@ fn html(status: StatusCode, body: &str) -> Response {
         .into_response()
 }
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

@@ -65,6 +65,17 @@ pub enum UnisonCert {
     File { cert_path: String, key_path: String },
 }
 
+/// `/settings` の Creo ID ログイン (PKCE) に要る公開値。 secret は持たない。
+#[derive(Debug, Clone)]
+pub struct SettingsConfig {
+    /// Auth0 の SPA application の client_id (公開値)
+    pub client_id: String,
+    /// Hub 自身の URL (redirect_uri = `{public_url}/settings`)
+    pub public_url: String,
+    /// token の aud。 共通の aud `https://id.anycreative.tech` (ADR-023 Q2 の A)
+    pub audience: String,
+}
+
 /// 認証設定。 default は ecosystem canonical Creo ID (ADR-002/010)。
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
@@ -83,6 +94,8 @@ pub struct AuthConfig {
     pub admin_key: Option<String>,
     /// JWKS background refetch 間隔 (秒)。 ADR-010: 5 分。
     pub jwks_refresh_secs: u64,
+    /// `/settings` のブラウザログイン用 (`HUB_CLIENT_ID`)。 None なら `/settings` は 503。
+    pub settings: Option<SettingsConfig>,
 }
 
 impl Config {
@@ -171,6 +184,22 @@ impl Config {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(300),
+                settings: std::env::var("HUB_CLIENT_ID")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .map(|client_id| SettingsConfig {
+                        client_id,
+                        public_url: std::env::var("HUB_PUBLIC_URL")
+                            .ok()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "https://hub.chronista.club".into())
+                            .trim_end_matches('/')
+                            .to_string(),
+                        audience: std::env::var("HUB_LOGIN_AUDIENCE")
+                            .ok()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "https://id.anycreative.tech".into()),
+                    }),
             },
         })
     }

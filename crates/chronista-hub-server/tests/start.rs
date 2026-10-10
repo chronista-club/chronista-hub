@@ -30,6 +30,7 @@ async fn router() -> axum::Router {
         product_tokens: ProductTokenStore::new(db),
         admin_key: None,
         issuer: ISSUER.into(),
+        settings: None,
         service: "chronista-hub".into(),
         version: "0.0.1".into(),
     })
