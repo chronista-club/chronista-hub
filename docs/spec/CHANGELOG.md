@@ -4,15 +4,18 @@
 
 ## [Unreleased]
 
-アプリの名簿（[ADR-009](../adr/ADR-009-product-manifest-schema.md) の段階 1）。
+アプリの名簿（[ADR-009](../adr/ADR-009-product-manifest-schema.md) の段階 1、server v0.7.0）と、利用者の名簿と handle（[ADR-023](../adr/ADR-023-creo-id-hub-apps-layering.md) D3、裁定 2026-10-09「handle は必要になったときに claim する」、server v0.8.0）。
 
 ### Added
 
 - `resource-type "app"` に `login_url`（ログインを始める URL。Hub の `/start` が link にする、ADR-023）
+- `resource-type "user"` に `usr_id`（Hub が振る `usr_` EntId、ADR-008 の stable key）と `creo_sub`（Creo ID の `sub`、本人だけに見せる）
 
 ### Changed（non-breaking — 制約の緩和）
 
 - `resource-type "app"` の `manifest_url` を必須から任意へ。段階 1 は管理 API で登録し、各アプリの well-known manifest はまだ配信されていないため。段階 2 で manifest の取得を始めたら必須に戻す
+- `resource-type "user"` の `handle` を必須から任意へ。行は初回接触で作り、handle は claim するまで無い。unique は維持
+- `resource-type "user"` の `email` を必須から任意へ。本物の利用者の email は Creo ID が持つ（ADR-023 D1）
 
 ## [0.3.0] — 2026-07-27
 
