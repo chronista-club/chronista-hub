@@ -143,7 +143,7 @@ const JS: &str = r#"
     app.innerHTML = `
       ${msg ? `<p class="msg">${esc(msg)}</p>` : ''}
       <section><h2>Creo ID</h2>
-        <p>${esc(id.name || id.nickname || '')}</p>
+        ${id.name || id.nickname ? `<p>${esc(id.name || id.nickname)}</p>` : ''}
         <p>${esc(id.email || '')} <span class="note">${id.email_verified === false ? '（未確認）' : ''}</span></p>
         <p class="note">利用者 ID: <code>${esc(me.usrId)}</code></p>
         <p class="note">メール、パスワード、ログイン方法は <a href="${esc(cfg.issuer)}">Creo ID</a> で管理します。ここでは見るだけです。</p>
