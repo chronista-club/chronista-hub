@@ -12,6 +12,7 @@
 - `resource-type "user"` に `usr_id`（Hub が振る `usr_` EntId、ADR-008 の stable key）と `creo_sub`（Creo ID の `sub`、本人だけに見せる）
 - `app.icon_url` を名簿に実際に入れ始めた（migration 010、server v0.9.1）。`/start` が公式アイコンとして描く。spec の型は変わらない
 - `/settings` の並びを Creo ID の情報 → 変更できる項目（handle、呼び名）に（server v0.9.2、裁定 2026-10-11）。spec の型は変わらない
+- handle の変更（rename、server v0.10.0、裁定 2026-10-12、ADR-002 追記）: `PUT /v1/me/handle` は handle が有れば rename。旧 handle は 100 日間本人のために取り置き（`GET /v1/users/@old` は 301 で新しい住所へ案内）、変えたあと 30 日は再変更不可。`resource-type "user"` に `handle_changed_at`、`identity-delegation.rename-policy` の数字を更新
 
 ### Changed（non-breaking — 制約の緩和）
 

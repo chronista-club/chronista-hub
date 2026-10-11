@@ -5,7 +5,8 @@
 //!
 //! - `GET /v1/me`: 自分の行。 user-jwt (Creo ID の `sub`) で本人を特定する。 無ければ作る
 //! - `PATCH /v1/me`: 呼び名 (display_name)。 自由文字列、 一意ではない
-//! - `PUT /v1/me/handle`: handle の claim。 早い者勝ち、 1 回決めたら固定 (rename は次の段)
+//! - `PUT /v1/me/handle`: handle が無ければ claim (早い者勝ち)、 あれば rename (裁定 2026-10-12:
+//!   旧 handle は 100 日間本人のために取り置き + 新しい住所へ案内、 30 日の cooldown)
 //! - `GET /v1/users/@{handle}`: 公開。 usr_id / handle / display_name だけ
 
 use std::path::Path;
@@ -25,20 +26,26 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 async fn router() -> axum::Router {
+    router_with_db().await.0
+}
+
+/// 時間を進めるテスト (取り置きの期限、 cooldown) は DB を直接いじるので db も返す。
+async fn router_with_db() -> (axum::Router, chronista_hub_server::db::Db) {
     let db = connect_mem("chronista", "hub").await.unwrap();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
     run_pending_migrations(&db, &dir).await.unwrap();
-    build_router(AppState {
+    let r = build_router(AppState {
         storage: Storage::new(db.clone()),
         event_log: EventLog::new(db.clone()),
         verifier: Arc::new(StubVerifier),
-        product_tokens: ProductTokenStore::new(db),
+        product_tokens: ProductTokenStore::new(db.clone()),
         admin_key: None,
         issuer: "https://id.creo-memories.in/".into(),
         settings: None,
         service: "chronista-hub".into(),
         version: "0.0.1".into(),
-    })
+    });
+    (r, db)
 }
 
 /// StubVerifier 用の無署名 user-jwt (payload に `sub` だけ)。
@@ -322,19 +329,223 @@ async fn reserved_handles_cannot_be_claimed() {
 }
 
 #[tokio::test]
-async fn a_handle_is_claimed_once_and_then_fixed() {
+async fn the_same_handle_again_is_idempotent() {
     let r = router().await;
     let (status, first) = claim(&r, Some(MITO), json!({ "handle": "mito" })).await;
     assert_eq!(status, StatusCode::CREATED);
-    // 同じ handle をもう一度は冪等
     let (status, again) = claim(&r, Some(MITO), json!({ "handle": "mito" })).await;
     assert_eq!(status, StatusCode::OK, "{again}");
     assert_eq!(again["usrId"], first["usrId"]);
-    // 別の handle へは変えられない (rename は次の段)
-    let (status, v) = claim(&r, Some(MITO), json!({ "handle": "mito2" })).await;
+    assert!(
+        again["reservedHandle"].is_null(),
+        "no rename happened: {again}"
+    );
+}
+
+// ---- rename (裁定 2026-10-12): 旧 handle は 100 日取り置き + 案内、 30 日の cooldown ----
+
+/// cooldown を抜けた状態にする (31 日前に rename したことにする)。
+async fn after_the_cooldown(db: &chronista_hub_server::db::Db, usr_id: &str) {
+    db.query("UPDATE user SET handle_changed_at = time::now() - 31d WHERE usr_id = $usr_id")
+        .bind(("usr_id", usr_id.to_string()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+}
+
+/// 取り置きの期限を切らす (101 日前に rename したことにする)。
+async fn after_the_reserve(db: &chronista_hub_server::db::Db, handle: &str) {
+    db.query("UPDATE type::record('handle_reserve', $h) SET expires_at = time::now() - 1d")
+        .bind(("h", handle.to_string()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn renaming_keeps_the_usr_id_and_reserves_the_old_handle() {
+    let r = router().await;
+    let (_, first) = claim(&r, Some(MITO), json!({ "handle": "mito" })).await;
+    let (status, me) = claim(&r, Some(MITO), json!({ "handle": "mito-2" })).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["usrId"], first["usrId"]);
+    assert_eq!(me["handle"], "mito-2");
+    assert_eq!(me["canonicalPath"], "/@mito-2");
+    assert_eq!(me["reservedHandle"]["handle"], "mito", "{me}");
+    assert!(me["reservedHandle"]["expiresAt"].is_string(), "{me}");
+    assert!(me["handleChangedAt"].is_string(), "{me}");
+    // 新しい住所は公開される
+    let (status, pub_new) = get(&r, "/v1/users/@mito-2", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pub_new["usrId"], first["usrId"]);
+    // 旧 handle は新しい住所へ案内する (301 + body にも書く)
+    let resp = r
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/users/@mito")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(resp.headers()["location"], "/v1/users/@mito-2");
+    assert_eq!(
+        resp.headers()["cache-control"],
+        "no-store",
+        "the 301 has an end date"
+    );
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["handle"], "mito-2");
+    assert_eq!(v["canonicalPath"], "/@mito-2");
+    assert_eq!(v["movedFrom"], "mito");
+}
+
+#[tokio::test]
+async fn a_reserved_handle_is_not_claimable_by_others_until_it_expires() {
+    let (r, db) = router_with_db().await;
+    claim(&r, Some(MITO), json!({ "handle": "mito" })).await;
+    claim(&r, Some(MITO), json!({ "handle": "mito-2" })).await;
+    // 100 日の間は取り置き: 他人の claim も rename も弾く
+    let (status, v) = claim(&r, Some(MAKO), json!({ "handle": "mito" })).await;
     assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    claim(&r, Some(MAKO), json!({ "handle": "mako" })).await;
+    let (status, v) = claim(&r, Some(MAKO), json!({ "handle": "mito" })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    // 期限が切れたら普通の claim に戻る
+    after_the_reserve(&db, "mito").await;
+    // mako は rename していないので cooldown は無い
+    let (status, mako) = claim(&r, Some(MAKO), json!({ "handle": "mito" })).await;
+    assert_eq!(status, StatusCode::OK, "{mako}");
+    assert_eq!(mako["handle"], "mito");
+    let (status, p) = get(&r, "/v1/users/@mito", None).await;
+    assert_eq!(status, StatusCode::OK, "{p}");
+    assert_eq!(
+        p["usrId"], mako["usrId"],
+        "the old address now belongs to its new owner"
+    );
+}
+
+#[tokio::test]
+async fn renaming_again_within_30_days_is_refused() {
+    let (r, db) = router_with_db().await;
+    claim(&r, Some(MITO), json!({ "handle": "mito" })).await;
+    let (_, me) = claim(&r, Some(MITO), json!({ "handle": "mito-2" })).await;
+    let (status, v) = claim(&r, Some(MITO), json!({ "handle": "mito-3" })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["reason"], "cooldown");
+    assert!(v["until"].is_string(), "{v}");
+    let (_, now) = get(&r, "/v1/me", Some(MITO)).await;
+    assert_eq!(now["handle"], "mito-2");
+    assert_eq!(now["reservedHandle"]["handle"], "mito");
+    // 30 日経てば変えられる。 取り置きは 1 人 1 つなので、 前の (mito) は捨てられる
+    after_the_cooldown(&db, me["usrId"].as_str().unwrap()).await;
+    let (status, v) = claim(&r, Some(MITO), json!({ "handle": "mito-3" })).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["reservedHandle"]["handle"], "mito-2");
+    let (status, _) = get(&r, "/v1/users/@mito", None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the older reserve is dropped"
+    );
+    let (status, mako) = claim(&r, Some(MAKO), json!({ "handle": "mito" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{mako}");
+}
+
+#[tokio::test]
+async fn the_owner_can_take_back_a_reserved_handle() {
+    let (r, db) = router_with_db().await;
+    claim(&r, Some(MITO), json!({ "handle": "mito" })).await;
+    let (_, me) = claim(&r, Some(MITO), json!({ "handle": "mito-2" })).await;
+    after_the_cooldown(&db, me["usrId"].as_str().unwrap()).await;
+    let (status, v) = claim(&r, Some(MITO), json!({ "handle": "mito" })).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["handle"], "mito");
+    assert_eq!(v["reservedHandle"]["handle"], "mito-2");
+    let (status, p) = get(&r, "/v1/users/@mito", None).await;
+    assert_eq!(status, StatusCode::OK, "{p}");
+}
+
+/// 二重送信: 2 つ目の rename が古い handle を前提に走っても、 1 つ目の取り置きを壊さない。
+#[tokio::test]
+async fn a_stale_second_rename_does_not_drop_the_fresh_reserve() {
+    let (r, db) = router_with_db().await;
+    claim(&r, Some(MITO), json!({ "handle": "aa" })).await;
+    let (_, me) = claim(&r, Some(MITO), json!({ "handle": "bb" })).await;
+    let usr_id = me["usrId"].as_str().unwrap();
+    // 2 つ目の要求は cooldown の pre-check を通っていた、 という状況を作る
+    db.query("UPDATE user SET handle_changed_at = NONE WHERE usr_id = $usr_id")
+        .bind(("usr_id", usr_id.to_string()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let st = Storage::new(db.clone());
+    let out = st.rename_handle(usr_id, "aa", "cc").await.unwrap();
+    assert!(
+        matches!(out, chronista_hub_server::model::RenameOutcome::Taken),
+        "{out:?}"
+    );
+    let u = st.get_user_by_id(usr_id).await.unwrap().unwrap();
+    assert_eq!(u.handle.as_deref(), Some("bb"));
+    let reserve = st
+        .get_reserve("aa")
+        .await
+        .unwrap()
+        .expect("reserve on aa survives");
+    assert_eq!(reserve.usr_id, usr_id);
+    assert!(st.get_reserve("cc").await.unwrap().is_none());
+    let (status, _) = get(&r, "/v1/users/@aa", None).await;
+    assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
+}
+
+/// 同時: mito の rename と mako の claim が同じ新しい handle を狙う。 どちらか 1 人だけが取り、
+/// 負けた側は 409 (500 ではない)。 transaction の衝突はやり直して答えを出す。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_rename_race_is_409_not_500() {
+    for _ in 0..10 {
+        let r = router().await;
+        claim(&r, Some(MITO), json!({ "handle": "mito" })).await;
+        let (a, b) = tokio::join!(
+            claim(&r, Some(MITO), json!({ "handle": "same" })),
+            claim(&r, Some(MAKO), json!({ "handle": "same" })),
+        );
+        let ok = [a.0, b.0]
+            .iter()
+            .filter(|s| **s == StatusCode::OK || **s == StatusCode::CREATED)
+            .count();
+        assert_eq!(ok, 1, "exactly one winner: {a:?} {b:?}");
+        for (status, v) in [&a, &b] {
+            assert_ne!(*status, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+            assert!(
+                *status == StatusCode::OK
+                    || *status == StatusCode::CREATED
+                    || *status == StatusCode::CONFLICT,
+                "{status} {v}"
+            );
+        }
+        let (status, p) = get(&r, "/v1/users/@same", None).await;
+        assert_eq!(status, StatusCode::OK, "{p}");
+    }
+}
+
+#[tokio::test]
+async fn renaming_to_a_taken_or_reserved_name_is_409() {
+    let r = router().await;
+    claim(&r, Some(MAKO), json!({ "handle": "mako" })).await;
+    claim(&r, Some(MITO), json!({ "handle": "mito" })).await;
+    for h in ["mako", "chronista"] {
+        let (status, v) = claim(&r, Some(MITO), json!({ "handle": h })).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{h}: {v}");
+    }
     let (_, me) = get(&r, "/v1/me", Some(MITO)).await;
     assert_eq!(me["handle"], "mito");
+    assert!(me["reservedHandle"].is_null(), "nothing was reserved: {me}");
 }
 
 #[tokio::test]

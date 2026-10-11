@@ -126,7 +126,7 @@ const JS: &str = r#"
     });
     if (res.status === 401) { forget(); throw new Unauthorized('ログインの期限が切れました。もう一度ログインしてください。'); }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || ('エラー (' + res.status + ')'));
+    if (!res.ok) throw Object.assign(new Error(data.error || ('エラー (' + res.status + ')')), { reason: data.reason, until: data.until });
     return data;
   }
 
@@ -134,12 +134,25 @@ const JS: &str = r#"
   // 1. Creo ID が持つもの (見るだけ)  2. ここで変えられるもの (handle、 呼び名)
   function view(me, msg) {
     const id = claims(SS.getItem(K.idt) || '');
+    const day = 24 * 60 * 60 * 1000;
+    const fmt = (iso) => new Date(iso).toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' });
+    // rename (裁定 2026-10-12): 旧 handle は 100 日取り置き + 案内、 変えたあと 30 日は再変更不可
+    const until = me.handleChangedAt ? new Date(new Date(me.handleChangedAt).getTime() + 30 * day) : null;
+    const cooling = until && until > new Date();
+    const reserved = me.reservedHandle
+      ? `<p class="note">@${esc(me.reservedHandle.handle)} は ${esc(fmt(me.reservedHandle.expiresAt))} まであなたのために取り置きされ、新しい住所へ案内します。</p>` : '';
     const handle = me.handle
       ? `<p><strong>@${esc(me.handle)}</strong> <span class="note">${esc(location.origin + me.canonicalPath)}</span></p>
-         <p class="note">handle は 1 人 1 つで、今は変えられません。</p>`
+         ${reserved}
+         <details><summary>handle を変える</summary>
+         <form id="claim"><label>新しい handle <input name="handle" required pattern="[A-Za-z0-9][A-Za-z0-9-]{0,30}" autocomplete="off" placeholder="${esc(me.handle)}"${cooling ? ' disabled' : ''}></label>
+         <button${cooling ? ' disabled' : ''}>この handle に変える</button>
+         <p class="note">${cooling
+           ? `次に変えられるのは ${esc(fmt(until))} からです（変えたあと 30 日は固定）。`
+           : '変えると、今の handle は 100 日間あなたのために取り置きされ、その間は新しい住所へ案内します。変えたあと 30 日は再変更できません。'}</p></form></details>`
       : `<form id="claim"><label>handle <input name="handle" required pattern="[A-Za-z0-9][A-Za-z0-9-]{0,30}" autocomplete="off" placeholder="mito"></label>
          <button>この handle にする</button>
-         <p class="note">小文字英数とハイフン、31 文字まで。Creo Apps で共通の住所になり、後から変えられません。必要になるまで決めなくても使えます。</p></form>`;
+         <p class="note">小文字英数とハイフン、31 文字まで。Creo Apps で共通の住所になります。必要になるまで決めなくても使えます。</p></form>`;
     app.innerHTML = `
       ${msg ? `<p class="msg">${esc(msg)}</p>` : ''}
       <section><h2>Creo ID</h2>
@@ -156,7 +169,10 @@ const JS: &str = r#"
         <p class="note">自由に付けられて、同じ名前の人がいても構いません。</p></section>`;
     const claim = document.getElementById('claim');
     const fail = (err) => (err instanceof Unauthorized ? render(err.message) : view(me, err.message));
-    if (claim) claim.onsubmit = async (e) => { e.preventDefault(); try { const h = new FormData(claim).get('handle').trim().toLowerCase(); view(await api('PUT', '/v1/me/handle', { handle: h }), '@' + h + ' を claim しました'); } catch (err) { fail(err); } };
+    const claimMsg = (h) => (me.handle ? '@' + h + ' に変えました。@' + me.handle + ' は 100 日間取り置きします' : '@' + h + ' を claim しました');
+    const claimErr = (err) => (err.reason === 'cooldown' ? '次に変えられるのは ' + fmt(err.until) + ' からです' : err.message);
+    // 送信中はボタンを止める (二重送信で 2 つ目の rename が走らないように)
+    if (claim) claim.onsubmit = async (e) => { e.preventDefault(); claim.querySelector('button').disabled = true; try { const h = new FormData(claim).get('handle').trim().toLowerCase(); view(await api('PUT', '/v1/me/handle', { handle: h }), claimMsg(h)); } catch (err) { err instanceof Unauthorized ? fail(err) : view(me, claimErr(err)); } };
     document.getElementById('name').onsubmit = async (e) => { e.preventDefault(); try { const n = new FormData(e.target).get('displayName'); view(await api('PATCH', '/v1/me', { displayName: n.trim() === '' ? null : n }), '呼び名を保存しました'); } catch (err) { fail(err); } };
     document.getElementById('logout').onclick = logout;
   }

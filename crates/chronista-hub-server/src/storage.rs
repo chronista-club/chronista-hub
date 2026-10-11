@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::db::Db;
-use crate::model::{AppEntry, AppManifest, AppStatus, Resource, UserEntry, Visibility};
+use crate::model::{
+    AppEntry, AppManifest, AppStatus, HandleReserve, RenameOutcome, Resource, UserEntry, Visibility,
+};
 
 /// REST の未認証 tree/resource read で **vp-node (federation registry) の非 public を
 /// 隠す** guard (ADR-020 §S5)。 owner/visibility 分離は Unison `nodes.Discover` が
@@ -298,6 +300,10 @@ impl Storage {
     /// 初回接触 (`/v1/me`): `sub` の行が無ければ `usr_` EntId を振って作る (裁定 2026-10-09)。
     /// handle は空のまま。 同時に 2 回来ても `creo_sub` の unique index で 1 行に収束する。
     pub async fn ensure_user(&self, sub: &str) -> anyhow::Result<UserEntry> {
+        retry_on_conflict("ensure_user", || self.ensure_user_once(sub)).await
+    }
+
+    async fn ensure_user_once(&self, sub: &str) -> anyhow::Result<UserEntry> {
         if let Some(u) = self.get_user_by_sub(sub).await? {
             return Ok(u);
         }
@@ -339,13 +345,29 @@ impl Storage {
 
     /// handle を claim する (ADR-023 D3、 早い者勝ち)。 handle は正規化済みの前提。
     /// 取られていれば `Ok(None)`。 同時に来た 2 人は handle の unique index が片方を弾く。
-    /// 既に handle を持つ行には触らない (rename は次の段)。
+    /// 既に handle を持つ行には触らない (そちらは [`Self::rename_handle`])。
+    /// 他人の取り置き (rename の旧 handle、 100 日) も「取られている」。
     pub async fn claim_handle(
         &self,
         usr_id: &str,
         handle: &str,
     ) -> anyhow::Result<Option<UserEntry>> {
+        retry_on_conflict("claim_handle", || self.claim_handle_once(usr_id, handle)).await
+    }
+
+    async fn claim_handle_once(
+        &self,
+        usr_id: &str,
+        handle: &str,
+    ) -> anyhow::Result<Option<UserEntry>> {
         if self.get_user_by_handle(handle).await?.is_some() {
+            return Ok(None);
+        }
+        if self
+            .get_reserve(handle)
+            .await?
+            .is_some_and(|r| r.usr_id != usr_id)
+        {
             return Ok(None);
         }
         let updated = self
@@ -373,6 +395,159 @@ impl Storage {
         }
     }
 
+    /// 期限内の取り置きを旧 handle で引く。 期限切れは無いものとして扱う (行は lazy に残る)。
+    pub async fn get_reserve(&self, handle: &str) -> anyhow::Result<Option<HandleReserve>> {
+        let rows: Vec<Value> = self
+            .db
+            .query(
+                "SELECT handle, usr_id, new_handle, <string> expires_at AS expires_at
+                 FROM handle_reserve WHERE handle = $handle AND expires_at > time::now() LIMIT 1",
+            )
+            .bind(("handle", handle.to_string()))
+            .await?
+            .take(0)?;
+        rows_to_reserves(rows).map(|v| v.into_iter().next())
+    }
+
+    /// 本人の期限内の取り置き (同時に 1 つ)。
+    pub async fn get_reserve_of(&self, usr_id: &str) -> anyhow::Result<Option<HandleReserve>> {
+        let rows: Vec<Value> = self
+            .db
+            .query(
+                "SELECT handle, usr_id, new_handle, <string> expires_at AS expires_at
+                 FROM handle_reserve WHERE usr_id = $usr_id AND expires_at > time::now() LIMIT 1",
+            )
+            .bind(("usr_id", usr_id.to_string()))
+            .await?
+            .take(0)?;
+        rows_to_reserves(rows).map(|v| v.into_iter().next())
+    }
+
+    /// 旧 handle が取り置き中なら、 持ち主の今の handle を返す (`/@old` の案内先)。
+    pub async fn resolve_moved_handle(&self, old: &str) -> anyhow::Result<Option<UserEntry>> {
+        let Some(r) = self.get_reserve(old).await? else {
+            return Ok(None);
+        };
+        Ok(self
+            .get_user_by_id(&r.usr_id)
+            .await?
+            .filter(|u| u.handle.is_some() && u.account_type == "user"))
+    }
+
+    /// handle を変える (裁定 2026-10-12)。 `old` は今の handle、 `new` は正規化済みの前提。
+    /// - 旧 handle は 100 日間本人のために取り置く (他人は claim できない、 `/@old` は案内する)
+    /// - rename 後 30 日は再変更できない
+    /// - 本人の取り置きは同時に 1 つ。 前のものは捨てる (取り戻すときもこの DELETE で消える)
+    ///
+    /// 判断は全部 1 つの transaction の中: まず UPDATE (WHERE に今の handle と cooldown)、
+    /// 行が合わなければ THROW で全体を戻す。 使用中・予約名は handle の unique index が弾く
+    /// (pre-check しない。 同時に来た claim / rename とも同じ道で `Taken`)。
+    /// 他人の取り置きだけは index が無いので先に見る。
+    pub async fn rename_handle(
+        &self,
+        usr_id: &str,
+        old: &str,
+        new: &str,
+    ) -> anyhow::Result<RenameOutcome> {
+        // 同時に走った transaction 同士の衝突 (write conflict) は、 やり直せば正しい答えになる
+        // (Renamed / Taken / Cooldown のどれか)。 2 回やってもだめなら相手が勝ったとみて Taken
+        for attempt in 0..3 {
+            match self.rename_handle_once(usr_id, old, new).await? {
+                None => {
+                    tracing::info!(usr_id, new, attempt, "rename_handle: conflict, retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt + 1))).await;
+                }
+                Some(outcome) => return Ok(outcome),
+            }
+        }
+        Ok(RenameOutcome::Taken)
+    }
+
+    /// 1 回分。 `None` = transaction の衝突 (やり直す価値がある)。
+    async fn rename_handle_once(
+        &self,
+        usr_id: &str,
+        old: &str,
+        new: &str,
+    ) -> anyhow::Result<Option<RenameOutcome>> {
+        let until: Vec<String> = self
+            .db
+            .query(
+                "SELECT VALUE <string> (handle_changed_at + 30d) FROM user
+                 WHERE usr_id = $usr_id AND handle_changed_at != NONE
+                   AND handle_changed_at > time::now() - 30d",
+            )
+            .bind(("usr_id", usr_id.to_string()))
+            .await?
+            .take(0)?;
+        if let Some(until) = until.into_iter().next() {
+            return Ok(Some(RenameOutcome::Cooldown { until }));
+        }
+        if self
+            .get_reserve(new)
+            .await?
+            .is_some_and(|r| r.usr_id != usr_id)
+        {
+            return Ok(Some(RenameOutcome::Taken));
+        }
+        let mut resp = self
+            .db
+            .query(
+                "BEGIN TRANSACTION;
+                 LET $u = (UPDATE type::record('user', $usr_id)
+                     SET handle = $new, handle_changed_at = time::now()
+                     WHERE handle = $old AND account_type = 'user'
+                       AND (handle_changed_at = NONE OR handle_changed_at <= time::now() - 30d)
+                     RETURN AFTER);
+                 IF array::len($u) = 0 { THROW 'stale' };
+                 DELETE handle_reserve WHERE usr_id = $usr_id;
+                 UPSERT type::record('handle_reserve', $old) CONTENT {
+                     handle: $old, usr_id: $usr_id, new_handle: $new,
+                     expires_at: time::now() + 100d
+                 };
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("usr_id", usr_id.to_string()))
+            .bind(("old", old.to_string()))
+            .bind(("new", new.to_string()))
+            .await?;
+        // transaction が失敗すると、 原因の statement 以外は「not executed」になる。
+        // 原因を探して分類する
+        let errors = resp.take_errors();
+        if !errors.is_empty() {
+            let msgs: Vec<String> = errors.values().map(|e| e.to_string()).collect();
+            if msgs.iter().any(|m| m.contains("already contains")) {
+                tracing::info!(new, "rename_handle: handle is taken (unique index)");
+                return Ok(Some(RenameOutcome::Taken));
+            }
+            if msgs.iter().any(|m| m.contains("stale")) {
+                tracing::info!(usr_id, old, new, "rename_handle: row did not match (stale)");
+                return Ok(Some(RenameOutcome::Taken));
+            }
+            // 残るのは transaction 自体の失敗だけ ("not executed"、 "Cannot COMMIT …
+            // Transaction conflict / Write conflict, retry")。 原因の statement が無いならやり直す
+            let is_conflict = |m: &String| {
+                m.contains("not executed") || m.contains("Cannot COMMIT") || is_conflict_msg(m)
+            };
+            if msgs.iter().all(is_conflict) {
+                return Ok(None);
+            }
+            let real = msgs
+                .iter()
+                .find(|m| !is_conflict(m))
+                .cloned()
+                .unwrap_or_default();
+            anyhow::bail!("rename_handle failed: {real}");
+        }
+        match self.get_user_by_id(usr_id).await? {
+            Some(u) if u.handle.as_deref() == Some(new) => {
+                tracing::info!(usr_id, old, new, "handle renamed, old one reserved 100d");
+                Ok(Some(RenameOutcome::Renamed(u)))
+            }
+            _ => anyhow::bail!("rename_handle: committed but the row does not show the new handle"),
+        }
+    }
+
     /// `usr_id` で利用者の行を引く。
     pub async fn get_user_by_id(&self, usr_id: &str) -> anyhow::Result<Option<UserEntry>> {
         let rows: Vec<Value> = self
@@ -386,6 +561,17 @@ impl Storage {
 
     /// 呼び名を変える。 `None` で消す。
     pub async fn set_display_name(
+        &self,
+        usr_id: &str,
+        display_name: Option<&str>,
+    ) -> anyhow::Result<Option<UserEntry>> {
+        retry_on_conflict("set_display_name", || {
+            self.set_display_name_once(usr_id, display_name)
+        })
+        .await
+    }
+
+    async fn set_display_name_once(
         &self,
         usr_id: &str,
         display_name: Option<&str>,
@@ -597,6 +783,8 @@ struct UserRow {
     display_name: Option<String>,
     #[serde(default)]
     creo_sub: Option<String>,
+    #[serde(default)]
+    handle_changed_at: Option<String>,
     account_type: String,
 }
 
@@ -610,15 +798,48 @@ fn rows_to_users(rows: Vec<Value>) -> anyhow::Result<Vec<UserEntry>> {
                 handle: r.handle,
                 display_name: r.display_name,
                 creo_sub: r.creo_sub,
+                handle_changed_at: r.handle_changed_at,
                 account_type: r.account_type,
             })
         })
         .collect()
 }
 
+fn rows_to_reserves(rows: Vec<Value>) -> anyhow::Result<Vec<HandleReserve>> {
+    rows.into_iter()
+        .map(|v| Ok(serde_json::from_value(v)?))
+        .collect()
+}
+
 /// SurrealDB の unique index 違反 ("Database index `…` already contains …")。
 fn is_unique_violation(e: &surrealdb::Error) -> bool {
     e.to_string().contains("already contains")
+}
+
+/// SurrealDB の transaction 衝突 ("Transaction conflict: Write conflict, retry the transaction")。
+/// 同じ table を同時に書いたときに出る。 やり直せば通る
+fn is_conflict_msg(m: &str) -> bool {
+    m.contains("Transaction conflict") || m.contains("can be retried")
+}
+
+/// 書き込みを、 transaction の衝突のときだけやり直す (最大 3 回、 少し待つ)。
+/// 衝突以外のエラーはそのまま返す
+async fn retry_on_conflict<T, F, Fut>(what: &str, mut f: F) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let mut attempt = 0;
+    loop {
+        match f().await {
+            Err(e) if attempt < 2 && is_conflict_msg(&e.to_string()) => {
+                attempt += 1;
+                tracing::info!(what, attempt, "transaction conflict, retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(10 * attempt)).await;
+            }
+            r => return r,
+        }
+    }
 }
 
 /// `usr_` EntId を振る (ADR-008)。 base58 の 16 文字 (約 94 bit)。
