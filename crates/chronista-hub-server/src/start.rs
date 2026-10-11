@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::model::{AppEntry, AppStatus};
+use crate::model::AppEntry;
 
 #[derive(Debug, Deserialize)]
 pub struct StartQuery {
@@ -137,6 +137,7 @@ pub(crate) fn escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::AppStatus;
 
     fn entry(name: &str, icon_url: Option<&str>) -> AppEntry {
         AppEntry {
