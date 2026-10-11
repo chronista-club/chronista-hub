@@ -60,8 +60,25 @@ fn app_list(apps: &[AppEntry]) -> String {
         let Some(login_url) = app.login_url.as_deref() else {
             continue;
         };
+        // 公式アイコン (名簿の icon_url、 裁定 2026-10-11)。 無ければ頭文字の placeholder
+        let icon = match app.icon_url.as_deref() {
+            Some(u) => format!(
+                "<img class=\"icon\" src=\"{}\" alt=\"\" width=\"40\" height=\"40\">",
+                escape(u)
+            ),
+            None => format!(
+                "<span class=\"icon placeholder\" aria-hidden=\"true\">{}</span>",
+                escape(
+                    &app.name
+                        .chars()
+                        .next()
+                        .map(|c| c.to_string())
+                        .unwrap_or_default()
+                )
+            ),
+        };
         items.push_str(&format!(
-            "<li><a href=\"{url}\"><strong>{name}</strong><span>{desc}</span></a></li>",
+            "<li><a href=\"{url}\">{icon}<span class=\"text\"><strong>{name}</strong><span>{desc}</span></span></a></li>",
             url = escape(login_url),
             name = escape(&app.name),
             desc = escape(app.description.as_deref().unwrap_or("")),
@@ -89,8 +106,10 @@ pub(crate) const CSS: &str = ":root{color-scheme:light dark;--bg:#f7f7f5;--fg:#1
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,\"Hiragino Sans\",sans-serif}\
 main{max-width:28rem;margin:0 auto;padding:3rem 1rem}h1{font-size:1.4rem;margin:0 0 1rem}\
 .apps{list-style:none;padding:0;margin:1.5rem 0;display:grid;gap:.75rem}\
-.apps a{display:flex;flex-direction:column;padding:1rem;border:1px solid var(--line);border-radius:12px;background:var(--card);color:inherit;text-decoration:none}\
-.apps a:hover,.apps a:focus-visible{border-color:var(--accent)}.apps span,.note{color:var(--muted);font-size:.9rem}\
+.apps a{display:flex;align-items:center;gap:.9rem;padding:1rem;border:1px solid var(--line);border-radius:12px;background:var(--card);color:inherit;text-decoration:none}\
+.apps a:hover,.apps a:focus-visible{border-color:var(--accent)}.apps .text{display:flex;flex-direction:column;min-width:0}.apps .text span,.note{color:var(--muted);font-size:.9rem}\
+.apps .icon{flex:none;width:40px;height:40px;border-radius:10px;object-fit:contain}\
+.apps .placeholder{display:grid;place-items:center;background:var(--bg);border:1px solid var(--line);color:var(--muted);font-weight:600}\
 section{padding:1rem;margin:1rem 0;border:1px solid var(--line);border-radius:12px;background:var(--card)}h2{font-size:1rem;margin:0 0 .5rem}\
 label{display:block;margin:.5rem 0}input{display:block;width:100%;box-sizing:border-box;margin-top:.25rem;padding:.5rem;font:inherit;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:inherit}\
 button{font:inherit;padding:.5rem 1rem;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}button.secondary{background:transparent;color:var(--accent)}\
@@ -113,4 +132,39 @@ pub(crate) fn escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::AppStatus;
+
+    fn entry(name: &str, icon_url: Option<&str>) -> AppEntry {
+        AppEntry {
+            app_id: "x".into(),
+            name: name.into(),
+            description: None,
+            icon_url: icon_url.map(String::from),
+            home_url: None,
+            login_url: Some("https://x.example/login".into()),
+            manifest_url: None,
+            status: AppStatus::Active,
+        }
+    }
+
+    #[test]
+    fn official_icon_is_an_img_and_a_missing_one_is_an_escaped_initial() {
+        let html = app_list(&[
+            entry("Creo", Some("https://creo-memories.in/creo-logo-v2.svg")),
+            entry("<X&Y", None),
+        ]);
+        assert!(
+            html.contains("<img class=\"icon\" src=\"https://creo-memories.in/creo-logo-v2.svg\"")
+        );
+        assert!(
+            html.contains("placeholder\" aria-hidden=\"true\">&lt;</span>"),
+            "{html}"
+        );
+        assert!(!html.contains(">&lt;X&amp;Y</strong>") || html.contains("&lt;X&amp;Y"));
+    }
 }
