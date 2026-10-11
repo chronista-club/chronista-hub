@@ -11,6 +11,7 @@
 - `resource-type "app"` に `login_url`（ログインを始める URL。Hub の `/start` が link にする、ADR-023）
 - `resource-type "user"` に `usr_id`（Hub が振る `usr_` EntId、ADR-008 の stable key）と `creo_sub`（Creo ID の `sub`、本人だけに見せる）
 - `app.icon_url` を名簿に実際に入れ始めた（migration 010、server v0.9.1）。`/start` が公式アイコンとして描く。spec の型は変わらない
+- `/settings` の並びを Creo ID の情報 → 変更できる項目（handle、呼び名）に（server v0.9.2、裁定 2026-10-11）。spec の型は変わらない
 
 ### Changed（non-breaking — 制約の緩和）
 

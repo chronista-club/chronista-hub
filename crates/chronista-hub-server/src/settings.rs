@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 use crate::app::AppState;
 use crate::config::SettingsConfig;
-use crate::start::{escape, html, page};
+use crate::start::{html, page};
 
 pub async fn settings(State(st): State<AppState>) -> Response {
     let Some(cfg) = st.settings.as_ref() else {
@@ -66,12 +66,8 @@ fn body(cfg: &SettingsConfig, issuer: &str) -> String {
     format!(
         "<noscript><p>この画面には JavaScript が要ります。</p></noscript>\
          <div id=\"app\" aria-live=\"polite\"><p class=\"note\">読み込み中…</p></div>\
-         <p class=\"note\">ログインとアカウント（メール、パスワード、ログイン方法）は \
-         <a href=\"{issuer}\">Creo ID</a> が持っています。ここで変えられるのは、Creo Apps で \
-         共通の handle と呼び名です。</p>\
          <script id=\"cfg\" type=\"application/json\">{config}</script>\
-         <script>{JS}</script>",
-        issuer = escape(issuer),
+         <script>{JS}</script>"
     )
 }
 
@@ -89,7 +85,9 @@ const JS: &str = r#"
   const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const rand = () => { const a = new Uint8Array(32); crypto.getRandomValues(a); return b64url(a.buffer); };
   const sha256 = async (s) => b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
-  const claims = (jwt) => { try { return JSON.parse(atob(jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); } catch { return {}; } };
+  // atob は Latin-1 の文字列を返すので、 日本語の name が化けないように bytes → UTF-8 で読む
+  const b64urlDecode = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)));
+  const claims = (jwt) => { try { return JSON.parse(b64urlDecode(jwt.split('.')[1])); } catch { return {}; } };
 
   async function login() {
     const verifier = rand(), state = rand();
@@ -132,6 +130,8 @@ const JS: &str = r#"
     return data;
   }
 
+  // 並び (mako 2026-10-11「CreoIDの情報が先頭にあって、そのあと変更できる項目で並べて」):
+  // 1. Creo ID が持つもの (見るだけ)  2. ここで変えられるもの (handle、 呼び名)
   function view(me, msg) {
     const id = claims(SS.getItem(K.idt) || '');
     const handle = me.handle
@@ -142,16 +142,18 @@ const JS: &str = r#"
          <p class="note">小文字英数とハイフン、31 文字まで。Creo Apps で共通の住所になり、後から変えられません。必要になるまで決めなくても使えます。</p></form>`;
     app.innerHTML = `
       ${msg ? `<p class="msg">${esc(msg)}</p>` : ''}
-      <section><h2>handle</h2>${handle}</section>
-      <section><h2>呼び名</h2>
+      <section><h2>Creo ID</h2>
+        ${id.name || id.nickname ? `<p>${esc(id.name || id.nickname)}</p>` : ''}
+        <p>${esc(id.email || '')} <span class="note">${id.email_verified === false ? '（未確認）' : ''}</span></p>
+        <p class="note">利用者 ID: <code>${esc(me.usrId)}</code></p>
+        <p class="note">メール、パスワード、ログイン方法は <a href="${esc(cfg.issuer)}">Creo ID</a> で管理します。ここでは見るだけです。</p>
+        <button id="logout" class="secondary">ログアウト</button></section>
+      <h2 class="group">ここで変えられるもの</h2>
+      <section><h3>handle</h3>${handle}</section>
+      <section><h3>呼び名</h3>
         <form id="name"><label>表示される名前 <input name="displayName" maxlength="80" value="${esc(me.displayName || '')}" placeholder="みと"></label>
         <button>保存</button></form>
-        <p class="note">自由に付けられて、同じ名前の人がいても構いません。</p></section>
-      <section><h2>アカウント</h2>
-        <p>${esc(id.email || '')} <span class="note">${id.email_verified === false ? '（未確認）' : ''}</span></p>
-        <p class="note">メール、パスワード、ログイン方法は Creo ID で管理します。</p>
-        <p class="note">利用者 ID: <code>${esc(me.usrId)}</code></p>
-        <button id="logout" class="secondary">ログアウト</button></section>`;
+        <p class="note">自由に付けられて、同じ名前の人がいても構いません。</p></section>`;
     const claim = document.getElementById('claim');
     const fail = (err) => (err instanceof Unauthorized ? render(err.message) : view(me, err.message));
     if (claim) claim.onsubmit = async (e) => { e.preventDefault(); try { const h = new FormData(claim).get('handle').trim().toLowerCase(); view(await api('PUT', '/v1/me/handle', { handle: h }), '@' + h + ' を claim しました'); } catch (err) { fail(err); } };
@@ -162,7 +164,7 @@ const JS: &str = r#"
   // msg があれば一番上に出す (ログインの失敗、 期限切れ、 ログアウト)
   async function render(msg) {
     if (!SS.getItem(K.at)) {
-      app.innerHTML = `${msg ? `<p class="msg">${esc(msg)}</p>` : ''}<p>Creo Apps で共通の handle と呼び名を設定します。</p><button id="login">Creo ID でログイン</button>`;
+      app.innerHTML = `${msg ? `<p class="msg">${esc(msg)}</p>` : ''}<p>Creo Apps で共通の handle と呼び名を設定します。ログインとアカウントは Creo ID が持っています。</p><button id="login">Creo ID でログイン</button>`;
       document.getElementById('login').onclick = login;
       return;
     }
@@ -183,3 +185,17 @@ const JS: &str = r#"
   })();
 })();
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::JS;
+
+    /// 画面の並び: Creo ID の情報が先頭、 そのあとに変えられる項目 (handle、 呼び名)
+    #[test]
+    fn creo_id_comes_first_then_what_can_be_changed() {
+        let at = |s: &str| JS.find(s).unwrap_or_else(|| panic!("{s} missing"));
+        assert!(at("<h2>Creo ID</h2>") < at("<h2 class=\"group\">ここで変えられるもの</h2>"));
+        assert!(at("<h2 class=\"group\">ここで変えられるもの</h2>") < at("<h3>handle</h3>"));
+        assert!(at("<h3>handle</h3>") < at("<h3>呼び名</h3>"));
+    }
+}

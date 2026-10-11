@@ -202,6 +202,7 @@ mako の裁定（原文）: 「hub.chronista.club(relashionship) + id.creo-memor
 - ローカル demo 用の Auth0: 開発用 tenant は `creo-memories.jp.auth0.com`（mako 2026-10-11「dev-chronistaなくて、"creo-memories"と"anycreative"があったので前者にした」）。そこに API `https://hub.chronista.club`（Chronista Hub (dev)）と SPA application「Chronista Hub (dev) — /settings」（client_id `NRe1V723kgi0of46n7GG1B3Re9952eOK`、callback `http://localhost:3000/settings`）を作成。ローカルの Hub は `CREO_ID_ISSUER=https://creo-memories.jp.auth0.com/` と `CREO_ID_AUDIENCES=HUB_LOGIN_AUDIENCE=https://hub.chronista.club` で向ける。live には触れない
 - `/start` の一覧には各アプリの**公式アイコン**を並べる（mako 2026-10-11「startに並べるのは、公式アイコンが良いね」）。`app.icon_url` を migration 010 で入れる（Creo Memories `https://creo-memories.in/creo-logo-v2.svg`、VP `https://vantage-point.app/favicon.svg`。GFP は公開アイコンが無いので頭文字の placeholder）。Hub 自身のアイコンは火花 mem_1Cfv1fbhCi2ePqa4NWZDEj
 - 利用者向けの文言では「家族のアプリ」と言わず **Creo Apps** と呼ぶ（mako 2026-10-11「家族のアプリよりは、Creo Appsとかのが良いかな？」「Creo IDを押しても良いし」）。「家族」は本 ADR と内輪の語。Creo ID と Creo Apps で対にする
+- 画面の並び（2026-10-11、mako「設定ページどちらかというと、CreoIDの情報が先頭にあって、そのあと変更できる項目で並べて」、v0.9.2）: 先頭が **Creo ID**（名前、メール、利用者 ID、ログアウト。見るだけ、管理は Creo ID へのリンク）、そのあとに **ここで変えられるもの** として handle と呼び名。データの持ち主の分け方（誰か = Creo ID、つながり = Hub）を画面の並びでもそのまま見せる
 
 ## References
 
