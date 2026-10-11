@@ -65,6 +65,23 @@ async fn start_with_creo_issuer_lists_family_app_logins() {
 }
 
 #[tokio::test]
+async fn start_shows_official_icons_or_an_initial() {
+    // 公式アイコン (migration 010) は img、 無いアプリ (GFP) は頭文字の placeholder
+    let (status, _, body) = get("/start?iss=https%3A%2F%2Fid.creo-memories.in%2F").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("src=\"https://creo-memories.in/creo-logo-v2.svg\""),
+        "{body}"
+    );
+    assert!(
+        body.contains("placeholder\" aria-hidden=\"true\">G<"),
+        "{body}"
+    );
+    // VP は login_url が無いので一覧に出ず、 その icon も出ない
+    assert!(!body.contains("vantage-point.app/favicon.svg"));
+}
+
+#[tokio::test]
 async fn start_without_issuer_still_shows_the_list() {
     let (status, _, body) = get("/start").await;
     assert_eq!(status, StatusCode::OK);
