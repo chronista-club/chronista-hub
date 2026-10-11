@@ -393,6 +393,11 @@ async fn renaming_keeps_the_usr_id_and_reserves_the_old_handle() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
     assert_eq!(resp.headers()["location"], "/v1/users/@mito-2");
+    assert_eq!(
+        resp.headers()["cache-control"],
+        "no-store",
+        "the 301 has an end date"
+    );
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let v: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["handle"], "mito-2");
@@ -413,7 +418,7 @@ async fn a_reserved_handle_is_not_claimable_by_others_until_it_expires() {
     assert_eq!(status, StatusCode::CONFLICT, "{v}");
     // 期限が切れたら普通の claim に戻る
     after_the_reserve(&db, "mito").await;
-    after_the_cooldown(&db, v["usrId"].as_str().unwrap_or("")).await;
+    // mako は rename していないので cooldown は無い
     let (status, mako) = claim(&r, Some(MAKO), json!({ "handle": "mito" })).await;
     assert_eq!(status, StatusCode::OK, "{mako}");
     assert_eq!(mako["handle"], "mito");
@@ -464,6 +469,39 @@ async fn the_owner_can_take_back_a_reserved_handle() {
     assert_eq!(v["reservedHandle"]["handle"], "mito-2");
     let (status, p) = get(&r, "/v1/users/@mito", None).await;
     assert_eq!(status, StatusCode::OK, "{p}");
+}
+
+/// 二重送信: 2 つ目の rename が古い handle を前提に走っても、 1 つ目の取り置きを壊さない。
+#[tokio::test]
+async fn a_stale_second_rename_does_not_drop_the_fresh_reserve() {
+    let (r, db) = router_with_db().await;
+    claim(&r, Some(MITO), json!({ "handle": "aa" })).await;
+    let (_, me) = claim(&r, Some(MITO), json!({ "handle": "bb" })).await;
+    let usr_id = me["usrId"].as_str().unwrap();
+    // 2 つ目の要求は cooldown の pre-check を通っていた、 という状況を作る
+    db.query("UPDATE user SET handle_changed_at = NONE WHERE usr_id = $usr_id")
+        .bind(("usr_id", usr_id.to_string()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let st = Storage::new(db.clone());
+    let out = st.rename_handle(usr_id, "aa", "cc").await.unwrap();
+    assert!(
+        matches!(out, chronista_hub_server::model::RenameOutcome::Taken),
+        "{out:?}"
+    );
+    let u = st.get_user_by_id(usr_id).await.unwrap().unwrap();
+    assert_eq!(u.handle.as_deref(), Some("bb"));
+    let reserve = st
+        .get_reserve("aa")
+        .await
+        .unwrap()
+        .expect("reserve on aa survives");
+    assert_eq!(reserve.usr_id, usr_id);
+    assert!(st.get_reserve("cc").await.unwrap().is_none());
+    let (status, _) = get(&r, "/v1/users/@aa", None).await;
+    assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
 }
 
 #[tokio::test]

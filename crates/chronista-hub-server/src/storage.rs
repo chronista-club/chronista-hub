@@ -427,7 +427,10 @@ impl Storage {
     /// - rename 後 30 日は再変更できない
     /// - 本人の取り置きは同時に 1 つ。 前のものは捨てる (取り戻すときもこの DELETE で消える)
     ///
-    /// 取り置きの作成と handle の更新は 1 つの transaction。 unique index の衝突は `Taken`。
+    /// 判断は全部 1 つの transaction の中: まず UPDATE (WHERE に今の handle と cooldown)、
+    /// 行が合わなければ THROW で全体を戻す。 使用中・予約名は handle の unique index が弾く
+    /// (pre-check しない。 同時に来た claim / rename とも同じ道で `Taken`)。
+    /// 他人の取り置きだけは index が無いので先に見る。
     pub async fn rename_handle(
         &self,
         usr_id: &str,
@@ -447,61 +450,61 @@ impl Storage {
         if let Some(until) = until.into_iter().next() {
             return Ok(RenameOutcome::Cooldown { until });
         }
-        if self.get_user_by_handle(new).await?.is_some()
-            || self
-                .get_reserve(new)
-                .await?
-                .is_some_and(|r| r.usr_id != usr_id)
+        if self
+            .get_reserve(new)
+            .await?
+            .is_some_and(|r| r.usr_id != usr_id)
         {
             return Ok(RenameOutcome::Taken);
         }
-        let done = self
+        let mut resp = self
             .db
             .query(
                 "BEGIN TRANSACTION;
+                 LET $u = (UPDATE type::record('user', $usr_id)
+                     SET handle = $new, handle_changed_at = time::now()
+                     WHERE handle = $old AND account_type = 'user'
+                       AND (handle_changed_at = NONE OR handle_changed_at <= time::now() - 30d)
+                     RETURN AFTER);
+                 IF array::len($u) = 0 { THROW 'stale' };
                  DELETE handle_reserve WHERE usr_id = $usr_id;
                  UPSERT type::record('handle_reserve', $old) CONTENT {
                      handle: $old, usr_id: $usr_id, new_handle: $new,
                      expires_at: time::now() + 100d
                  };
-                 UPDATE type::record('user', $usr_id)
-                     SET handle = $new, handle_changed_at = time::now()
-                     WHERE handle = $old AND account_type = 'user';
                  COMMIT TRANSACTION;",
             )
             .bind(("usr_id", usr_id.to_string()))
             .bind(("old", old.to_string()))
             .bind(("new", new.to_string()))
-            .await?
-            .check();
-        match done {
-            Ok(_) => match self.get_user_by_id(usr_id).await? {
-                Some(u) if u.handle.as_deref() == Some(new) => {
-                    tracing::info!(usr_id, old, new, "handle renamed, old one reserved 100d");
-                    Ok(RenameOutcome::Renamed(u))
-                }
-                _ => {
-                    // WHERE に合わなかった (同時に別の rename が走った)。 作った取り置きは戻す
-                    tracing::warn!(
-                        usr_id,
-                        old,
-                        new,
-                        "rename_handle: row did not match, undoing"
-                    );
-                    self.db
-                        .query("DELETE type::record('handle_reserve', $old) WHERE usr_id = $usr_id")
-                        .bind(("old", old.to_string()))
-                        .bind(("usr_id", usr_id.to_string()))
-                        .await?
-                        .check()?;
-                    Ok(RenameOutcome::Taken)
-                }
-            },
-            Err(e) if is_unique_violation(&e) => {
-                tracing::info!(new, "rename_handle: lost the race on the unique index");
-                Ok(RenameOutcome::Taken)
+            .await?;
+        // transaction が失敗すると、 原因の statement 以外は「not executed」になる。
+        // 原因を探して分類する
+        let errors = resp.take_errors();
+        if !errors.is_empty() {
+            let msgs: Vec<String> = errors.values().map(|e| e.to_string()).collect();
+            if msgs.iter().any(|m| m.contains("already contains")) {
+                tracing::info!(new, "rename_handle: handle is taken (unique index)");
+                return Ok(RenameOutcome::Taken);
             }
-            Err(e) => Err(e.into()),
+            if msgs.iter().any(|m| m.contains("stale")) {
+                tracing::info!(usr_id, old, new, "rename_handle: row did not match (stale)");
+                return Ok(RenameOutcome::Taken);
+            }
+            let real = msgs
+                .iter()
+                .find(|m| !m.contains("not executed") && !m.contains("Cannot COMMIT"))
+                .or(msgs.first())
+                .cloned()
+                .unwrap_or_default();
+            anyhow::bail!("rename_handle failed: {real}");
+        }
+        match self.get_user_by_id(usr_id).await? {
+            Some(u) if u.handle.as_deref() == Some(new) => {
+                tracing::info!(usr_id, old, new, "handle renamed, old one reserved 100d");
+                Ok(RenameOutcome::Renamed(u))
+            }
+            _ => anyhow::bail!("rename_handle: committed but the row does not show the new handle"),
         }
     }
 

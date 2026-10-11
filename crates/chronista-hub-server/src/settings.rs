@@ -171,7 +171,8 @@ const JS: &str = r#"
     const fail = (err) => (err instanceof Unauthorized ? render(err.message) : view(me, err.message));
     const claimMsg = (h) => (me.handle ? '@' + h + ' に変えました。@' + me.handle + ' は 100 日間取り置きします' : '@' + h + ' を claim しました');
     const claimErr = (err) => (err.reason === 'cooldown' ? '次に変えられるのは ' + fmt(err.until) + ' からです' : err.message);
-    if (claim) claim.onsubmit = async (e) => { e.preventDefault(); try { const h = new FormData(claim).get('handle').trim().toLowerCase(); view(await api('PUT', '/v1/me/handle', { handle: h }), claimMsg(h)); } catch (err) { err instanceof Unauthorized ? fail(err) : view(me, claimErr(err)); } };
+    // 送信中はボタンを止める (二重送信で 2 つ目の rename が走らないように)
+    if (claim) claim.onsubmit = async (e) => { e.preventDefault(); claim.querySelector('button').disabled = true; try { const h = new FormData(claim).get('handle').trim().toLowerCase(); view(await api('PUT', '/v1/me/handle', { handle: h }), claimMsg(h)); } catch (err) { err instanceof Unauthorized ? fail(err) : view(me, claimErr(err)); } };
     document.getElementById('name').onsubmit = async (e) => { e.preventDefault(); try { const n = new FormData(e.target).get('displayName'); view(await api('PATCH', '/v1/me', { displayName: n.trim() === '' ? null : n }), '呼び名を保存しました'); } catch (err) { fail(err); } };
     document.getElementById('logout').onclick = logout;
   }

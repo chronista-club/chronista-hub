@@ -684,9 +684,13 @@ async fn user_by_handle(
             Some(p) => {
                 let mut body = serde_json::to_value(&p)?;
                 body["movedFrom"] = json!(h);
+                // 301 だが期限がある (100 日、 取り戻しもある) ので、 ブラウザに覚えさせない
                 Ok((
                     StatusCode::MOVED_PERMANENTLY,
-                    [(header::LOCATION, format!("/v1/users/@{}", p.handle))],
+                    [
+                        (header::LOCATION, format!("/v1/users/@{}", p.handle)),
+                        (header::CACHE_CONTROL, "no-store".to_string()),
+                    ],
                     Json(body),
                 )
                     .into_response())
