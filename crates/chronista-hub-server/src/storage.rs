@@ -300,6 +300,10 @@ impl Storage {
     /// 初回接触 (`/v1/me`): `sub` の行が無ければ `usr_` EntId を振って作る (裁定 2026-10-09)。
     /// handle は空のまま。 同時に 2 回来ても `creo_sub` の unique index で 1 行に収束する。
     pub async fn ensure_user(&self, sub: &str) -> anyhow::Result<UserEntry> {
+        retry_on_conflict("ensure_user", || self.ensure_user_once(sub)).await
+    }
+
+    async fn ensure_user_once(&self, sub: &str) -> anyhow::Result<UserEntry> {
         if let Some(u) = self.get_user_by_sub(sub).await? {
             return Ok(u);
         }
@@ -344,6 +348,14 @@ impl Storage {
     /// 既に handle を持つ行には触らない (そちらは [`Self::rename_handle`])。
     /// 他人の取り置き (rename の旧 handle、 100 日) も「取られている」。
     pub async fn claim_handle(
+        &self,
+        usr_id: &str,
+        handle: &str,
+    ) -> anyhow::Result<Option<UserEntry>> {
+        retry_on_conflict("claim_handle", || self.claim_handle_once(usr_id, handle)).await
+    }
+
+    async fn claim_handle_once(
         &self,
         usr_id: &str,
         handle: &str,
@@ -437,6 +449,24 @@ impl Storage {
         old: &str,
         new: &str,
     ) -> anyhow::Result<RenameOutcome> {
+        // 同時に走った transaction 同士の衝突 (write conflict) は、 やり直せば正しい答えになる
+        // (Renamed / Taken / Cooldown のどれか)。 2 回やってもだめなら相手が勝ったとみて Taken
+        for attempt in 0..3 {
+            match self.rename_handle_once(usr_id, old, new).await? {
+                None => tracing::info!(usr_id, new, attempt, "rename_handle: conflict, retrying"),
+                Some(outcome) => return Ok(outcome),
+            }
+        }
+        Ok(RenameOutcome::Taken)
+    }
+
+    /// 1 回分。 `None` = transaction の衝突 (やり直す価値がある)。
+    async fn rename_handle_once(
+        &self,
+        usr_id: &str,
+        old: &str,
+        new: &str,
+    ) -> anyhow::Result<Option<RenameOutcome>> {
         let until: Vec<String> = self
             .db
             .query(
@@ -448,14 +478,14 @@ impl Storage {
             .await?
             .take(0)?;
         if let Some(until) = until.into_iter().next() {
-            return Ok(RenameOutcome::Cooldown { until });
+            return Ok(Some(RenameOutcome::Cooldown { until }));
         }
         if self
             .get_reserve(new)
             .await?
             .is_some_and(|r| r.usr_id != usr_id)
         {
-            return Ok(RenameOutcome::Taken);
+            return Ok(Some(RenameOutcome::Taken));
         }
         let mut resp = self
             .db
@@ -485,16 +515,23 @@ impl Storage {
             let msgs: Vec<String> = errors.values().map(|e| e.to_string()).collect();
             if msgs.iter().any(|m| m.contains("already contains")) {
                 tracing::info!(new, "rename_handle: handle is taken (unique index)");
-                return Ok(RenameOutcome::Taken);
+                return Ok(Some(RenameOutcome::Taken));
             }
             if msgs.iter().any(|m| m.contains("stale")) {
                 tracing::info!(usr_id, old, new, "rename_handle: row did not match (stale)");
-                return Ok(RenameOutcome::Taken);
+                return Ok(Some(RenameOutcome::Taken));
+            }
+            // 残るのは transaction 自体の失敗だけ ("not executed"、 "Cannot COMMIT …
+            // Transaction conflict / Write conflict, retry")。 原因の statement が無いならやり直す
+            let is_conflict = |m: &String| {
+                m.contains("not executed") || m.contains("Cannot COMMIT") || is_conflict_msg(m)
+            };
+            if msgs.iter().all(is_conflict) {
+                return Ok(None);
             }
             let real = msgs
                 .iter()
-                .find(|m| !m.contains("not executed") && !m.contains("Cannot COMMIT"))
-                .or(msgs.first())
+                .find(|m| !is_conflict(m))
                 .cloned()
                 .unwrap_or_default();
             anyhow::bail!("rename_handle failed: {real}");
@@ -502,7 +539,7 @@ impl Storage {
         match self.get_user_by_id(usr_id).await? {
             Some(u) if u.handle.as_deref() == Some(new) => {
                 tracing::info!(usr_id, old, new, "handle renamed, old one reserved 100d");
-                Ok(RenameOutcome::Renamed(u))
+                Ok(Some(RenameOutcome::Renamed(u)))
             }
             _ => anyhow::bail!("rename_handle: committed but the row does not show the new handle"),
         }
@@ -521,6 +558,17 @@ impl Storage {
 
     /// 呼び名を変える。 `None` で消す。
     pub async fn set_display_name(
+        &self,
+        usr_id: &str,
+        display_name: Option<&str>,
+    ) -> anyhow::Result<Option<UserEntry>> {
+        retry_on_conflict("set_display_name", || {
+            self.set_display_name_once(usr_id, display_name)
+        })
+        .await
+    }
+
+    async fn set_display_name_once(
         &self,
         usr_id: &str,
         display_name: Option<&str>,
@@ -763,6 +811,32 @@ fn rows_to_reserves(rows: Vec<Value>) -> anyhow::Result<Vec<HandleReserve>> {
 /// SurrealDB の unique index 違反 ("Database index `…` already contains …")。
 fn is_unique_violation(e: &surrealdb::Error) -> bool {
     e.to_string().contains("already contains")
+}
+
+/// SurrealDB の transaction 衝突 ("Transaction conflict: Write conflict, retry the transaction")。
+/// 同じ table を同時に書いたときに出る。 やり直せば通る
+fn is_conflict_msg(m: &str) -> bool {
+    m.contains("Transaction conflict") || m.contains("can be retried")
+}
+
+/// 書き込みを、 transaction の衝突のときだけやり直す (最大 3 回、 少し待つ)。
+/// 衝突以外のエラーはそのまま返す
+async fn retry_on_conflict<T, F, Fut>(what: &str, mut f: F) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let mut attempt = 0;
+    loop {
+        match f().await {
+            Err(e) if attempt < 2 && is_conflict_msg(&e.to_string()) => {
+                attempt += 1;
+                tracing::info!(what, attempt, "transaction conflict, retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(10 * attempt)).await;
+            }
+            r => return r,
+        }
+    }
 }
 
 /// `usr_` EntId を振る (ADR-008)。 base58 の 16 文字 (約 94 bit)。

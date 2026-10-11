@@ -504,6 +504,36 @@ async fn a_stale_second_rename_does_not_drop_the_fresh_reserve() {
     assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
 }
 
+/// 同時: mito の rename と mako の claim が同じ新しい handle を狙う。 どちらか 1 人だけが取り、
+/// 負けた側は 409 (500 ではない)。 transaction の衝突はやり直して答えを出す。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_rename_race_is_409_not_500() {
+    for _ in 0..10 {
+        let r = router().await;
+        claim(&r, Some(MITO), json!({ "handle": "mito" })).await;
+        let (a, b) = tokio::join!(
+            claim(&r, Some(MITO), json!({ "handle": "same" })),
+            claim(&r, Some(MAKO), json!({ "handle": "same" })),
+        );
+        let ok = [a.0, b.0]
+            .iter()
+            .filter(|s| **s == StatusCode::OK || **s == StatusCode::CREATED)
+            .count();
+        assert_eq!(ok, 1, "exactly one winner: {a:?} {b:?}");
+        for (status, v) in [&a, &b] {
+            assert_ne!(*status, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+            assert!(
+                *status == StatusCode::OK
+                    || *status == StatusCode::CREATED
+                    || *status == StatusCode::CONFLICT,
+                "{status} {v}"
+            );
+        }
+        let (status, p) = get(&r, "/v1/users/@same", None).await;
+        assert_eq!(status, StatusCode::OK, "{p}");
+    }
+}
+
 #[tokio::test]
 async fn renaming_to_a_taken_or_reserved_name_is_409() {
     let r = router().await;
