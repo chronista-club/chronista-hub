@@ -154,6 +154,8 @@ async fn updating_an_app_replaces_its_entry() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    // PUT は置き換え (ADR-009): status を省くと active。 閉じていた GFP (migration 011 で
+    // pending) もこれで再開する。 閉じたままにするなら "status": "pending" を明示する
     let (_, start) = get(&r, "/start").await;
     assert!(start.contains("https://app.gfp.works/login"));
     assert!(!start.contains("https://app.gfp.works/auth/login"));

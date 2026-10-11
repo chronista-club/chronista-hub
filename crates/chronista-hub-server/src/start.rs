@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::model::AppEntry;
+use crate::model::{AppEntry, AppStatus};
 
 #[derive(Debug, Deserialize)]
 pub struct StartQuery {
@@ -132,4 +132,38 @@ pub(crate) fn escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, icon_url: Option<&str>) -> AppEntry {
+        AppEntry {
+            app_id: "x".into(),
+            name: name.into(),
+            description: None,
+            icon_url: icon_url.map(String::from),
+            home_url: None,
+            login_url: Some("https://x.example/login".into()),
+            manifest_url: None,
+            status: AppStatus::Active,
+        }
+    }
+
+    #[test]
+    fn official_icon_is_an_img_and_a_missing_one_is_an_escaped_initial() {
+        let html = app_list(&[
+            entry("Creo", Some("https://creo-memories.in/creo-logo-v2.svg")),
+            entry("<X&Y", None),
+        ]);
+        assert!(
+            html.contains("<img class=\"icon\" src=\"https://creo-memories.in/creo-logo-v2.svg\"")
+        );
+        assert!(
+            html.contains("placeholder\" aria-hidden=\"true\">&lt;</span>"),
+            "{html}"
+        );
+        assert!(!html.contains(">&lt;X&amp;Y</strong>") || html.contains("&lt;X&amp;Y"));
+    }
 }

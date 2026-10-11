@@ -66,8 +66,8 @@ async fn start_with_creo_issuer_lists_family_app_logins() {
 }
 
 #[tokio::test]
-async fn start_shows_official_icons_or_an_initial() {
-    // 公式アイコン (migration 010) は img、 無いアプリ (GFP) は頭文字の placeholder
+async fn start_shows_official_icons() {
+    // 公式アイコン (migration 010) は img。 頭文字の placeholder の分岐は src/start.rs の単体 test
     let (status, _, body) = get("/start?iss=https%3A%2F%2Fid.creo-memories.in%2F").await;
     assert_eq!(status, StatusCode::OK);
     assert!(
