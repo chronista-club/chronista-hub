@@ -199,6 +199,9 @@ mako の裁定（原文）: 「hub.chronista.club(relashionship) + id.creo-memor
 - Auth0 側（tenant 共通、D4 により mako の判断で記録はここ。2026-10-11 に作成済み）: application「Creo ID — Chronista Hub」（Single Page Application、`token_endpoint_auth_method: none`、grant は authorization_code と refresh_token）、client_id `y6wG9SkSBGOBOCiTohQKsiaM3HCkfNil`（公開値）。Allowed Callback URLs / Allowed Logout URLs = `https://hub.chronista.club/settings` と `http://localhost:3000/settings`（Auth0 は path まで完全一致で見る）、Allowed Web Origins = `https://hub.chronista.club` と `http://localhost:3000`。first-party なので共通 API `https://id.anycreative.tech` の token は同意画面なしで取れる
 - ログアウトは Hub からだけ出る（sessionStorage を消す）。Creo ID の SSO session（家族のアプリ全部）は切らない
 - CSP: `script-src` は inline script の sha256、`connect-src` は自分と Creo ID、`frame-ancestors 'none'`（claim は取り消せないので clickjacking に入れない）
+- ローカル demo 用の Auth0: 開発用 tenant は `creo-memories.jp.auth0.com`（mako 2026-10-11「dev-chronistaなくて、"creo-memories"と"anycreative"があったので前者にした」）。そこに API `https://hub.chronista.club`（Chronista Hub (dev)）と SPA application「Chronista Hub (dev) — /settings」（client_id `NRe1V723kgi0of46n7GG1B3Re9952eOK`、callback `http://localhost:3000/settings`）を作成。ローカルの Hub は `CREO_ID_ISSUER=https://creo-memories.jp.auth0.com/` と `CREO_ID_AUDIENCES=HUB_LOGIN_AUDIENCE=https://hub.chronista.club` で向ける。live には触れない
+- `/start` の一覧には各アプリの**公式アイコン**を並べる（mako 2026-10-11「startに並べるのは、公式アイコンが良いね」）。`app.icon_url` を migration 010 で入れる（Creo Memories `https://creo-memories.in/creo-logo-v2.svg`、VP `https://vantage-point.app/favicon.svg`。GFP は公開アイコンが無いので頭文字の placeholder）。Hub 自身のアイコンは火花 mem_1Cfv1fbhCi2ePqa4NWZDEj
+- 利用者向けの文言では「家族のアプリ」と言わず **Creo Apps** と呼ぶ（mako 2026-10-11「家族のアプリよりは、Creo Appsとかのが良いかな？」「Creo IDを押しても良いし」）。「家族」は本 ADR と内輪の語。Creo ID と Creo Apps で対にする
 
 ## References
 

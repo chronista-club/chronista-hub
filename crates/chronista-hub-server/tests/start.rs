@@ -59,9 +59,25 @@ async fn start_with_creo_issuer_lists_family_app_logins() {
     assert_eq!(status, StatusCode::OK);
     assert!(ctype.starts_with("text/html"), "content-type = {ctype}");
     assert!(body.contains("https://app.creo-memories.in/auth/login"));
-    assert!(body.contains("https://app.gfp.works/auth/login"));
+    // GFP はいったん閉じている (migration 011、 status = pending)
+    assert!(!body.contains("https://app.gfp.works/auth/login"));
     // VP は CLI でログインする
     assert!(body.contains("vp auth login"));
+}
+
+#[tokio::test]
+async fn start_shows_official_icons() {
+    // 公式アイコン (migration 010) は img。 頭文字の placeholder の分岐は src/start.rs の単体 test
+    let (status, _, body) = get("/start?iss=https%3A%2F%2Fid.creo-memories.in%2F").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("src=\"https://creo-memories.in/creo-logo-v2.svg\""),
+        "{body}"
+    );
+    // GFP は閉じているので placeholder 自体が出ない
+    assert!(!body.contains("class=\"icon placeholder\""), "{body}");
+    // VP は login_url が無いので一覧に出ず、 その icon も出ない
+    assert!(!body.contains("vantage-point.app/favicon.svg"));
 }
 
 #[tokio::test]

@@ -84,7 +84,8 @@ async fn the_family_apps_are_seeded_into_the_roster() {
     let r = router_with(None).await;
     let (status, body) = get(&r, "/v1/apps").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(app_ids(&body), ["creo-memories", "gfp", "vantage-point"]);
+    // GFP は閉じている (migration 011、 status = pending) ので active の一覧には出ない
+    assert_eq!(app_ids(&body), ["creo-memories", "vantage-point"]);
 
     let v: Value = serde_json::from_str(&body).unwrap();
     let creo = &v["apps"][0];
@@ -153,6 +154,8 @@ async fn updating_an_app_replaces_its_entry() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    // PUT は置き換え (ADR-009): status を省くと active。 閉じていた GFP (migration 011 で
+    // pending) もこれで再開する。 閉じたままにするなら "status": "pending" を明示する
     let (_, start) = get(&r, "/start").await;
     assert!(start.contains("https://app.gfp.works/login"));
     assert!(!start.contains("https://app.gfp.works/auth/login"));
@@ -213,7 +216,7 @@ async fn registration_rejects_unsafe_or_malformed_input() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{app_id} {body} → {resp}");
     }
     let (_, list) = get(&r, "/v1/apps").await;
-    assert_eq!(app_ids(&list), ["creo-memories", "gfp", "vantage-point"]);
+    assert_eq!(app_ids(&list), ["creo-memories", "vantage-point"]);
 }
 
 #[tokio::test]

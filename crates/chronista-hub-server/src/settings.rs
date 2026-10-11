@@ -67,7 +67,7 @@ fn body(cfg: &SettingsConfig, issuer: &str) -> String {
         "<noscript><p>この画面には JavaScript が要ります。</p></noscript>\
          <div id=\"app\" aria-live=\"polite\"><p class=\"note\">読み込み中…</p></div>\
          <p class=\"note\">ログインとアカウント（メール、パスワード、ログイン方法）は \
-         <a href=\"{issuer}\">Creo ID</a> が持っています。ここで変えられるのは、家族のアプリで \
+         <a href=\"{issuer}\">Creo ID</a> が持っています。ここで変えられるのは、Creo Apps で \
          共通の handle と呼び名です。</p>\
          <script id=\"cfg\" type=\"application/json\">{config}</script>\
          <script>{JS}</script>",
@@ -139,7 +139,7 @@ const JS: &str = r#"
          <p class="note">handle は 1 人 1 つで、今は変えられません。</p>`
       : `<form id="claim"><label>handle <input name="handle" required pattern="[A-Za-z0-9][A-Za-z0-9-]{0,30}" autocomplete="off" placeholder="mito"></label>
          <button>この handle にする</button>
-         <p class="note">小文字英数とハイフン、31 文字まで。家族のアプリで共通の住所になり、後から変えられません。必要になるまで決めなくても使えます。</p></form>`;
+         <p class="note">小文字英数とハイフン、31 文字まで。Creo Apps で共通の住所になり、後から変えられません。必要になるまで決めなくても使えます。</p></form>`;
     app.innerHTML = `
       ${msg ? `<p class="msg">${esc(msg)}</p>` : ''}
       <section><h2>handle</h2>${handle}</section>
@@ -162,7 +162,7 @@ const JS: &str = r#"
   // msg があれば一番上に出す (ログインの失敗、 期限切れ、 ログアウト)
   async function render(msg) {
     if (!SS.getItem(K.at)) {
-      app.innerHTML = `${msg ? `<p class="msg">${esc(msg)}</p>` : ''}<p>家族のアプリで共通の handle と呼び名を設定します。</p><button id="login">Creo ID でログイン</button>`;
+      app.innerHTML = `${msg ? `<p class="msg">${esc(msg)}</p>` : ''}<p>Creo Apps で共通の handle と呼び名を設定します。</p><button id="login">Creo ID でログイン</button>`;
       document.getElementById('login').onclick = login;
       return;
     }
