@@ -84,7 +84,8 @@ async fn the_family_apps_are_seeded_into_the_roster() {
     let r = router_with(None).await;
     let (status, body) = get(&r, "/v1/apps").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(app_ids(&body), ["creo-memories", "gfp", "vantage-point"]);
+    // GFP は閉じている (migration 011、 status = pending) ので active の一覧には出ない
+    assert_eq!(app_ids(&body), ["creo-memories", "vantage-point"]);
 
     let v: Value = serde_json::from_str(&body).unwrap();
     let creo = &v["apps"][0];
@@ -213,7 +214,7 @@ async fn registration_rejects_unsafe_or_malformed_input() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{app_id} {body} → {resp}");
     }
     let (_, list) = get(&r, "/v1/apps").await;
-    assert_eq!(app_ids(&list), ["creo-memories", "gfp", "vantage-point"]);
+    assert_eq!(app_ids(&list), ["creo-memories", "vantage-point"]);
 }
 
 #[tokio::test]

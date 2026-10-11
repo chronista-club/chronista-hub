@@ -59,7 +59,8 @@ async fn start_with_creo_issuer_lists_family_app_logins() {
     assert_eq!(status, StatusCode::OK);
     assert!(ctype.starts_with("text/html"), "content-type = {ctype}");
     assert!(body.contains("https://app.creo-memories.in/auth/login"));
-    assert!(body.contains("https://app.gfp.works/auth/login"));
+    // GFP はいったん閉じている (migration 011、 status = pending)
+    assert!(!body.contains("https://app.gfp.works/auth/login"));
     // VP は CLI でログインする
     assert!(body.contains("vp auth login"));
 }
@@ -73,10 +74,8 @@ async fn start_shows_official_icons_or_an_initial() {
         body.contains("src=\"https://creo-memories.in/creo-logo-v2.svg\""),
         "{body}"
     );
-    assert!(
-        body.contains("placeholder\" aria-hidden=\"true\">G<"),
-        "{body}"
-    );
+    // GFP は閉じているので placeholder 自体が出ない
+    assert!(!body.contains("class=\"icon placeholder\""), "{body}");
     // VP は login_url が無いので一覧に出ず、 その icon も出ない
     assert!(!body.contains("vantage-point.app/favicon.svg"));
 }
