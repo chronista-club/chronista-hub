@@ -86,6 +86,19 @@ identity-delegation {
 - **Case-sensitive**: 却下、 impersonation risk 大
 - **完全拒否 (404)**: 却下、 UX 悪い
 
+## 2026-10-12 追記 — rename を Hub で実装（v0.10.0）
+
+ADR-023 D3 で handle の持ち主は Hub になった（Creo ID は「誰か」だけ）。本 ADR の「Creo ID delegate / mirror」は handle については ADR-023 に置き換わり、ライフサイクルの数字も裁定 2026-10-12 で次のとおり決め直した（mako「reserve設けたほうが良さそやね。どれくらい？100日とか？」「それでいこう」）。
+
+| 項目 | 本 ADR（2026-04-25） | 2026-10-12 の裁定 |
+|---|---|---|
+| rename | Creo ID 側の event を mirror | Hub の `PUT /v1/me/handle`（handle が有れば rename） |
+| 旧 handle | 301、90 日保持 | **100 日**、本人だけが取り戻せる取り置き（`handle_reserve`、migration 012）。期間中 `GET /v1/users/@old` は 301 + body で新しい住所へ案内。切れたら即空く |
+| 再変更 | reclaim cooldown 180 日 | **rename 後 30 日**は再変更不可（`user.handle_changed_at`、409 + `reason: "cooldown"` + `until`） |
+| 取り置きの数 | — | 本人につき同時に 1 つ。次の rename で前のものは捨てる（30 日の cooldown と合わせて、取り置きで handle を溜め込めない） |
+
+案内先は取り置きに書いた `new_handle` ではなく持ち主の**今の** handle（取り置きが残っている間に再 rename はできないので同じ値だが、持ち主の行を正とする）。`/@{handle}` の HTML 側（ADR-012）はまだ無く、API だけ。
+
 ## References
 
 - Memory: `mem_1CaP9DxkU2ZgHpXRQRwcMS` (G1 決定 drill-down)

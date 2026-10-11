@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -15,7 +15,9 @@ use serde_json::json;
 use crate::auth::{AuthError, PrincipalKind, Verifier, authenticate};
 use crate::config::SettingsConfig;
 use crate::event_log::EventLog;
-use crate::model::{AppEntry, AppStatus, Visibility, canonical_handle, validate_envelope};
+use crate::model::{
+    AppEntry, AppStatus, RenameOutcome, Visibility, canonical_handle, validate_envelope,
+};
 use crate::product_token::ProductTokenStore;
 use crate::storage::{Storage, TreeReadOptions};
 
@@ -516,7 +518,7 @@ async fn me(State(st): State<AppState>, headers: HeaderMap) -> Result<Response, 
         Err(resp) => return Ok(*resp),
     };
     let u = st.storage.ensure_user(&sub).await?;
-    Ok(Json(me_view(&u)).into_response())
+    Ok(Json(me_json(&st, &u).await?).into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -555,7 +557,7 @@ async fn patch_me(
     };
     let u = st.storage.ensure_user(&sub).await?;
     let Some(display_name) = req.display_name else {
-        return Ok(Json(me_view(&u)).into_response());
+        return Ok(Json(me_json(&st, &u).await?).into_response());
     };
     let display_name = display_name
         .as_deref()
@@ -565,7 +567,7 @@ async fn patch_me(
         return bad("displayName must be 80 characters or fewer");
     }
     match st.storage.set_display_name(&u.usr_id, display_name).await? {
-        Some(u) => Ok(Json(me_view(&u)).into_response()),
+        Some(u) => Ok(Json(me_json(&st, &u).await?).into_response()),
         None => Err(anyhow::anyhow!("user row vanished during patch_me").into()),
     }
 }
@@ -576,8 +578,10 @@ struct ClaimRequest {
     handle: Option<String>,
 }
 
-/// handle の claim。 早い者勝ち、 1 回決めたら固定 (rename は次の段、 ADR-002 の方針で)。
-/// 予約名 (migration 004) と使用中は 409。 同じ handle をもう一度は 200 で冪等。
+/// handle の claim と rename。 handle が無ければ claim (早い者勝ち、 201)、 あれば rename (200)。
+/// 予約名 (migration 004)、 使用中、 他人の取り置きは 409。 同じ handle をもう一度は 200 で冪等。
+/// rename (裁定 2026-10-12): 旧 handle は 100 日間本人のために取り置き、 30 日の cooldown
+/// (409 + `reason: "cooldown"` + `until`)。
 /// 名簿にまだ居なければ (アプリが `/v1/me` を経ずに来た)、 載せてから claim する。
 async fn claim_handle(
     State(st): State<AppState>,
@@ -608,29 +612,49 @@ async fn claim_handle(
     let conflict =
         |msg: &str| Ok((StatusCode::CONFLICT, Json(json!({ "error": msg }))).into_response());
     let mine = st.storage.ensure_user(&sub).await?;
-    if let Some(current) = &mine.handle {
-        if *current == handle {
-            return Ok(Json(me_view(&mine)).into_response());
+    if let Some(current) = mine.handle.clone() {
+        if current == handle {
+            return Ok(Json(me_json(&st, &mine).await?).into_response());
         }
-        return conflict("handle already claimed by you; rename is not available yet");
+        return match st
+            .storage
+            .rename_handle(&mine.usr_id, &current, &handle)
+            .await?
+        {
+            RenameOutcome::Renamed(u) => Ok(Json(me_json(&st, &u).await?).into_response()),
+            RenameOutcome::Taken => conflict("handle is taken or reserved"),
+            RenameOutcome::Cooldown { until } => Ok((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "handle was changed less than 30 days ago",
+                    "reason": "cooldown",
+                    "until": until,
+                })),
+            )
+                .into_response()),
+        };
     }
     match st.storage.claim_handle(&mine.usr_id, &handle).await? {
         Some(u) => {
             tracing::info!(handle, usr_id = %u.usr_id, "handle claimed");
-            Ok((StatusCode::CREATED, Json(me_view(&u))).into_response())
+            Ok((StatusCode::CREATED, Json(me_json(&st, &u).await?)).into_response())
         }
         None => conflict("handle is taken or reserved"),
     }
 }
 
-fn me_view(u: &crate::model::UserEntry) -> serde_json::Value {
-    json!({
+/// 自分の行の形 (`/v1/me`)。 取り置き中の旧 handle があれば `reservedHandle` に付ける。
+async fn me_json(st: &AppState, u: &crate::model::UserEntry) -> anyhow::Result<serde_json::Value> {
+    let reserve = st.storage.get_reserve_of(&u.usr_id).await?;
+    Ok(json!({
         "usrId": u.usr_id,
         "handle": u.handle,
         "displayName": u.display_name,
         "canonicalPath": u.canonical_path(),
         "creoSub": u.creo_sub,
-    })
+        "handleChangedAt": u.handle_changed_at,
+        "reservedHandle": reserve.map(|r| json!({ "handle": r.handle, "expiresAt": r.expires_at })),
+    }))
 }
 
 /// 公開の行 (ADR-008 の 2 軸: usr_id と handle)。 `@` は任意、 大文字は小文字へ寄せる。
@@ -649,6 +673,25 @@ async fn user_by_handle(
             Some(p) => Ok(Json(p).into_response()),
             None => not_found(),
         },
-        _ => not_found(),
+        Some(_) => not_found(),
+        // 取り置き中の旧 handle は新しい住所へ案内する (裁定 2026-10-12、 ADR-002 soft redirect)
+        None => match st
+            .storage
+            .resolve_moved_handle(&h)
+            .await?
+            .and_then(|u| u.public())
+        {
+            Some(p) => {
+                let mut body = serde_json::to_value(&p)?;
+                body["movedFrom"] = json!(h);
+                Ok((
+                    StatusCode::MOVED_PERMANENTLY,
+                    [(header::LOCATION, format!("/v1/users/@{}", p.handle))],
+                    Json(body),
+                )
+                    .into_response())
+            }
+            None => not_found(),
+        },
     }
 }

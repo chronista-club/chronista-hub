@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::db::Db;
-use crate::model::{AppEntry, AppManifest, AppStatus, Resource, UserEntry, Visibility};
+use crate::model::{
+    AppEntry, AppManifest, AppStatus, HandleReserve, RenameOutcome, Resource, UserEntry, Visibility,
+};
 
 /// REST の未認証 tree/resource read で **vp-node (federation registry) の非 public を
 /// 隠す** guard (ADR-020 §S5)。 owner/visibility 分離は Unison `nodes.Discover` が
@@ -339,13 +341,21 @@ impl Storage {
 
     /// handle を claim する (ADR-023 D3、 早い者勝ち)。 handle は正規化済みの前提。
     /// 取られていれば `Ok(None)`。 同時に来た 2 人は handle の unique index が片方を弾く。
-    /// 既に handle を持つ行には触らない (rename は次の段)。
+    /// 既に handle を持つ行には触らない (そちらは [`Self::rename_handle`])。
+    /// 他人の取り置き (rename の旧 handle、 100 日) も「取られている」。
     pub async fn claim_handle(
         &self,
         usr_id: &str,
         handle: &str,
     ) -> anyhow::Result<Option<UserEntry>> {
         if self.get_user_by_handle(handle).await?.is_some() {
+            return Ok(None);
+        }
+        if self
+            .get_reserve(handle)
+            .await?
+            .is_some_and(|r| r.usr_id != usr_id)
+        {
             return Ok(None);
         }
         let updated = self
@@ -368,6 +378,128 @@ impl Storage {
             Err(e) if is_unique_violation(&e) => {
                 tracing::info!(handle, "claim_handle: lost the race on the unique index");
                 Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 期限内の取り置きを旧 handle で引く。 期限切れは無いものとして扱う (行は lazy に残る)。
+    pub async fn get_reserve(&self, handle: &str) -> anyhow::Result<Option<HandleReserve>> {
+        let rows: Vec<Value> = self
+            .db
+            .query(
+                "SELECT handle, usr_id, new_handle, <string> expires_at AS expires_at
+                 FROM handle_reserve WHERE handle = $handle AND expires_at > time::now() LIMIT 1",
+            )
+            .bind(("handle", handle.to_string()))
+            .await?
+            .take(0)?;
+        rows_to_reserves(rows).map(|v| v.into_iter().next())
+    }
+
+    /// 本人の期限内の取り置き (同時に 1 つ)。
+    pub async fn get_reserve_of(&self, usr_id: &str) -> anyhow::Result<Option<HandleReserve>> {
+        let rows: Vec<Value> = self
+            .db
+            .query(
+                "SELECT handle, usr_id, new_handle, <string> expires_at AS expires_at
+                 FROM handle_reserve WHERE usr_id = $usr_id AND expires_at > time::now() LIMIT 1",
+            )
+            .bind(("usr_id", usr_id.to_string()))
+            .await?
+            .take(0)?;
+        rows_to_reserves(rows).map(|v| v.into_iter().next())
+    }
+
+    /// 旧 handle が取り置き中なら、 持ち主の今の handle を返す (`/@old` の案内先)。
+    pub async fn resolve_moved_handle(&self, old: &str) -> anyhow::Result<Option<UserEntry>> {
+        let Some(r) = self.get_reserve(old).await? else {
+            return Ok(None);
+        };
+        Ok(self
+            .get_user_by_id(&r.usr_id)
+            .await?
+            .filter(|u| u.handle.is_some() && u.account_type == "user"))
+    }
+
+    /// handle を変える (裁定 2026-10-12)。 `old` は今の handle、 `new` は正規化済みの前提。
+    /// - 旧 handle は 100 日間本人のために取り置く (他人は claim できない、 `/@old` は案内する)
+    /// - rename 後 30 日は再変更できない
+    /// - 本人の取り置きは同時に 1 つ。 前のものは捨てる (取り戻すときもこの DELETE で消える)
+    ///
+    /// 取り置きの作成と handle の更新は 1 つの transaction。 unique index の衝突は `Taken`。
+    pub async fn rename_handle(
+        &self,
+        usr_id: &str,
+        old: &str,
+        new: &str,
+    ) -> anyhow::Result<RenameOutcome> {
+        let until: Vec<String> = self
+            .db
+            .query(
+                "SELECT VALUE <string> (handle_changed_at + 30d) FROM user
+                 WHERE usr_id = $usr_id AND handle_changed_at != NONE
+                   AND handle_changed_at > time::now() - 30d",
+            )
+            .bind(("usr_id", usr_id.to_string()))
+            .await?
+            .take(0)?;
+        if let Some(until) = until.into_iter().next() {
+            return Ok(RenameOutcome::Cooldown { until });
+        }
+        if self.get_user_by_handle(new).await?.is_some()
+            || self
+                .get_reserve(new)
+                .await?
+                .is_some_and(|r| r.usr_id != usr_id)
+        {
+            return Ok(RenameOutcome::Taken);
+        }
+        let done = self
+            .db
+            .query(
+                "BEGIN TRANSACTION;
+                 DELETE handle_reserve WHERE usr_id = $usr_id;
+                 UPSERT type::record('handle_reserve', $old) CONTENT {
+                     handle: $old, usr_id: $usr_id, new_handle: $new,
+                     expires_at: time::now() + 100d
+                 };
+                 UPDATE type::record('user', $usr_id)
+                     SET handle = $new, handle_changed_at = time::now()
+                     WHERE handle = $old AND account_type = 'user';
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("usr_id", usr_id.to_string()))
+            .bind(("old", old.to_string()))
+            .bind(("new", new.to_string()))
+            .await?
+            .check();
+        match done {
+            Ok(_) => match self.get_user_by_id(usr_id).await? {
+                Some(u) if u.handle.as_deref() == Some(new) => {
+                    tracing::info!(usr_id, old, new, "handle renamed, old one reserved 100d");
+                    Ok(RenameOutcome::Renamed(u))
+                }
+                _ => {
+                    // WHERE に合わなかった (同時に別の rename が走った)。 作った取り置きは戻す
+                    tracing::warn!(
+                        usr_id,
+                        old,
+                        new,
+                        "rename_handle: row did not match, undoing"
+                    );
+                    self.db
+                        .query("DELETE type::record('handle_reserve', $old) WHERE usr_id = $usr_id")
+                        .bind(("old", old.to_string()))
+                        .bind(("usr_id", usr_id.to_string()))
+                        .await?
+                        .check()?;
+                    Ok(RenameOutcome::Taken)
+                }
+            },
+            Err(e) if is_unique_violation(&e) => {
+                tracing::info!(new, "rename_handle: lost the race on the unique index");
+                Ok(RenameOutcome::Taken)
             }
             Err(e) => Err(e.into()),
         }
@@ -597,6 +729,8 @@ struct UserRow {
     display_name: Option<String>,
     #[serde(default)]
     creo_sub: Option<String>,
+    #[serde(default)]
+    handle_changed_at: Option<String>,
     account_type: String,
 }
 
@@ -610,9 +744,16 @@ fn rows_to_users(rows: Vec<Value>) -> anyhow::Result<Vec<UserEntry>> {
                 handle: r.handle,
                 display_name: r.display_name,
                 creo_sub: r.creo_sub,
+                handle_changed_at: r.handle_changed_at,
                 account_type: r.account_type,
             })
         })
+        .collect()
+}
+
+fn rows_to_reserves(rows: Vec<Value>) -> anyhow::Result<Vec<HandleReserve>> {
+    rows.into_iter()
+        .map(|v| Ok(serde_json::from_value(v)?))
         .collect()
 }
 
