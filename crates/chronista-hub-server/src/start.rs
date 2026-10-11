@@ -110,7 +110,7 @@ main{max-width:28rem;margin:0 auto;padding:3rem 1rem}h1{font-size:1.4rem;margin:
 .apps a:hover,.apps a:focus-visible{border-color:var(--accent)}.apps .text{display:flex;flex-direction:column;min-width:0}.apps .text span,.note{color:var(--muted);font-size:.9rem}\
 .apps .icon{flex:none;width:40px;height:40px;border-radius:10px;object-fit:contain}\
 .apps .placeholder{display:grid;place-items:center;background:var(--bg);border:1px solid var(--line);color:var(--muted);font-weight:600}\
-section{padding:1rem;margin:1rem 0;border:1px solid var(--line);border-radius:12px;background:var(--card)}h2{font-size:1rem;margin:0 0 .5rem}\
+section{padding:1rem;margin:1rem 0;border:1px solid var(--line);border-radius:12px;background:var(--card)}h2,h3{font-size:1rem;margin:0 0 .5rem}h2.group{margin:2rem 0 0;color:var(--muted);font-weight:500}section p{margin:.25rem 0}\
 label{display:block;margin:.5rem 0}input{display:block;width:100%;box-sizing:border-box;margin-top:.25rem;padding:.5rem;font:inherit;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:inherit}\
 button{font:inherit;padding:.5rem 1rem;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}button.secondary{background:transparent;color:var(--accent)}\
 .msg{padding:.5rem .75rem;border-radius:8px;background:var(--card);border:1px solid var(--accent)}code{font-size:.9em}";
