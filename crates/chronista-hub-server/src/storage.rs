@@ -453,7 +453,10 @@ impl Storage {
         // (Renamed / Taken / Cooldown のどれか)。 2 回やってもだめなら相手が勝ったとみて Taken
         for attempt in 0..3 {
             match self.rename_handle_once(usr_id, old, new).await? {
-                None => tracing::info!(usr_id, new, attempt, "rename_handle: conflict, retrying"),
+                None => {
+                    tracing::info!(usr_id, new, attempt, "rename_handle: conflict, retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt + 1))).await;
+                }
                 Some(outcome) => return Ok(outcome),
             }
         }
