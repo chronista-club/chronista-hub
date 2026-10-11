@@ -115,14 +115,17 @@ identity-delegation {
     primary-owner "creo-id"
     hub-role "mirror"
 
+    // 裁定 2026-10-12 (ADR-002 追記): handle は Hub が持ち (ADR-023 D3)、 rename も Hub
     rename-policy {
         mode "soft-redirect"
-        redirect-retention-days 90
+        redirect-retention-days 100   // 旧 handle は本人のために取り置き、 他人は claim 不可
+        rename-cooldown-days 30       // 変えたあと 30 日は再変更不可
+        reserves-per-user 1           // 次の rename で前の取り置きは捨てる
         path-identifier "usr_id"
     }
 
     reclaim-policy {
-        cooldown-days 180
+        cooldown-days 100   // = 取り置きの期限。 切れたら誰でも claim できる
     }
 
     canonicalization {
@@ -590,6 +593,7 @@ resource-type "user" {
         field "creo_sub"     string description="Creo ID の sub。 本人だけに見せる。 予約名の行には無い"
         field "email"        string description="個人なら user email、 org なら管理 email。 本物の利用者は持たない (Creo ID が持つ、 ADR-023 D1)"
         field "display_name" string description="呼び名。 自由文字列で一意ではない"
+        field "handle_changed_at" timestamp description="最後に rename した時刻。 30 日の cooldown の起点 (裁定 2026-10-12)。 claim では付かない"
         field "avatar_url"   string
         field "bio"          string
         field "locale"       string default="ja"

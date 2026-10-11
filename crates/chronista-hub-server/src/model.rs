@@ -92,7 +92,33 @@ pub struct UserEntry {
     /// Creo ID の `sub`。 公開の形 (`PublicUser`) には出さない
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creo_sub: Option<String>,
+    /// 最後に rename した時刻 (ISO 8601)。 30 日の cooldown の起点。 claim では付かない
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle_changed_at: Option<String>,
     pub account_type: String,
+}
+
+/// rename で取り置かれた旧 handle (裁定 2026-10-12: 100 日、 本人だけが取り戻せる)。
+/// DB の行そのまま (snake_case)。 API に出す形は `me_json` が組む
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HandleReserve {
+    pub handle: String,
+    pub usr_id: String,
+    pub new_handle: String,
+    /// ISO 8601。 これを過ぎたら誰でも claim できる
+    pub expires_at: String,
+}
+
+/// rename の結果。
+#[derive(Debug)]
+pub enum RenameOutcome {
+    Renamed(UserEntry),
+    /// 使用中、 予約名、 他人の取り置き
+    Taken,
+    /// 30 日の cooldown の中。 `until` はいつから変えられるか (ISO 8601)
+    Cooldown {
+        until: String,
+    },
 }
 
 impl UserEntry {
