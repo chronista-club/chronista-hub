@@ -58,7 +58,7 @@ mako「読める公開 URL　<-ここが綺麗かな。有料化するとした�
 | | 誰が | 何をする |
 |---|---|---|
 | `GET /v1/me/publishers` | 人（user-jwt） | 自分が使える名義。自分（handle があれば）と所属する団体（guest 以外）。アプリが「公開名義」の選択肢に使う |
-| `PUT /v1/publications/@{handle}/{slug}` | アプリ（product token） | 登録 / 置き換え。body `{ actorSub, url, title? }`。新規 201、更新 200、別のアプリの slug は 409 |
+| `PUT /v1/publications/@{handle}/{slug}` | アプリ（product token） | 登録 / 置き換え。body `{ actorSub, url, title? }`。新規 201、更新 200、別のアプリの slug は 409。取り置き中の旧 handle は持ち主の今の名義として扱う（索引は usr_id に付く） |
 | `DELETE /v1/publications/@{handle}/{slug}?actorSub=` | アプリ | 登録したアプリだけが消せる。actor の確認は PUT と同じ。取り置き中の旧 handle でも消せる |
 | `GET /v1/users/@{handle}/publications` | 誰でも | 名義の公開物の一覧 |
 | `GET /v1/users/@{handle}` | 誰でも | 団体も返す。`accountType` を足した |
