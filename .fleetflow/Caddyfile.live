@@ -18,8 +18,8 @@ hub.chronista.club {
 # apex = portal。 canonical は hub.chronista.club/@handle (ADR-019)、 apex は alias。
 chronista.club {
 	# /@{handle} を hub に alias proxy (brand URL `chronista.club/@handle` 維持)。
-	# ⚠️ TODO(code): hub は現状 /v1/tree/{handle} のみ。 canonical /@handle public route
-	#    が実装されるまでこの proxy は 404 になる (live code gap #2)。
+	# hub v0.11.0 から /@{handle} (名義のページ) と /@{handle}/{slug} (読める公開 URL) を出す
+	# (ADR-024)。 canonical は hub. のほう、 ここは alias。
 	@handle path /@*
 	reverse_proxy @handle 127.0.0.1:12880
 

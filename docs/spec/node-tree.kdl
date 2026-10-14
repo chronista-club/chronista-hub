@@ -634,8 +634,9 @@ resource-type "user" {
 // ============================================================================
 
 resource-type "organization" {
+    // ADR-024 (2026-10-14): 団体の行は user table (account_type = organization)、 持ち主は Hub
     slug "@{handle}/_org-meta"
-    ownership "creo-id"
+    ownership "hub"
     sync "event-sourced"
     phase "2"
 
@@ -650,8 +651,9 @@ resource-type "organization" {
 }
 
 resource-type "org-membership" {
+    // ADR-024: Hub の org_membership table (migration 013)。 段 1 は owner だけ、 招待は後
     slug "@{org-handle}/_members/{usr_id}"
-    ownership "creo-id"
+    ownership "hub"
     sync "event-sourced"
     phase "2"
 
@@ -883,6 +885,22 @@ resource-type "gfp-shipment" {
 // ============================================================================
 // App manifest (3rd party / 1st party 共通)
 // ============================================================================
+
+// 読める公開 URL の索引 (ADR-024)。 `/@{handle}/{slug}` → アプリの公開ページへ 302。
+// 登録はアプリが product token (scope register_publication) で行う。 プランの判定はアプリ
+resource-type "publication" {
+    slug "@{handle}/{slug}"
+    ownership "hub"
+
+    payload {
+        field "publisher_usr_id" ref target="user" key-field="usr_id" required=#true description="名義 (人 or 団体)。 handle が変わっても付いていく"
+        field "slug"       string required=#true pattern=#"^[a-z0-9][a-z0-9-]{0,62}$"# description="名義ごとに一意。 予約語と app_id は不可"
+        field "url"        string required=#true description="案内先 (https、 登録したアプリの host)"
+        field "title"      string
+        field "app_id"     string required=#true description="登録したアプリ。 同じアプリだけが書き換え・削除できる"
+        field "updated_by" ref target="user" key-field="usr_id" description="最後に登録した人"
+    }
+}
 
 resource-type "app" {
     slug "apps/{app_id}"

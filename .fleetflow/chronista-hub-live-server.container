@@ -26,7 +26,7 @@
 #      検証 = pin 不要・cert 配布不要、 restart/rotate で client 無変更)。 cert files が
 #      data/live に在ることが起動前提 (未発行なら .env を self-signed fallback に)。
 #      federation の direct path = IPv6 GUA (ADR-020 D3)。
-#   2. /@handle public route: hub は現状 /v1/tree/{handle} のみ (federation と独立した別トラック)。
+#   2. /@handle public route: v0.11.0 で /@{handle} と /@{handle}/{slug} を実装 (ADR-024)。
 #   3. portal: apex landing は pure Caddy (別 service 不要)。
 
 [Unit]

@@ -127,15 +127,29 @@ impl UserEntry {
         self.handle.as_ref().map(|h| format!("/@{h}"))
     }
 
-    /// 公開の形。 handle を claim した利用者だけが公開の住所を持つ
+    /// 公開の形。 handle を claim した利用者と団体だけが公開の住所を持つ。
+    /// 予約名 (account_type = reserved) は名義ではないので無い
     pub fn public(&self) -> Option<PublicUser> {
+        if !self.is_publisher_kind() {
+            return None;
+        }
         let handle = self.handle.clone()?;
         Some(PublicUser {
             usr_id: self.usr_id.clone(),
             canonical_path: format!("/@{handle}"),
             handle,
             display_name: self.display_name.clone(),
+            account_type: self.account_type.clone(),
         })
+    }
+
+    /// 名義になれる種類か (人 or 団体)。 予約名は違う
+    pub fn is_publisher_kind(&self) -> bool {
+        self.account_type == "user" || self.account_type == "organization"
+    }
+
+    pub fn is_organization(&self) -> bool {
+        self.account_type == "organization"
     }
 }
 
@@ -147,6 +161,48 @@ pub struct PublicUser {
     pub handle: String,
     pub display_name: Option<String>,
     pub canonical_path: String,
+    /// `user` (人) か `organization` (団体、 ADR-013 / ADR-024)
+    pub account_type: String,
+}
+
+/// 団体での役割 (ADR-013)。 段 1 で使うのは owner だけ。
+/// 名義として公開物を出せるのは guest 以外
+pub fn role_can_publish(role: &str) -> bool {
+    matches!(role, "owner" | "admin" | "member")
+}
+
+/// 読める公開 URL の索引の 1 行 (`/@{handle}/{slug}` → アプリの公開ページ、 ADR-024)。
+/// DB の行そのまま (snake_case)。 API に出す形は handler が組む
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Publication {
+    pub publisher_usr_id: String,
+    pub slug: String,
+    pub url: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub app_id: String,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+/// `/@{handle}/{slug}` に使えない slug。 spec の reserved-path-slug と、 handle の下の
+/// 予約の子 (`identity`、 node-tree.kdl の user subtree) と同じ並び。 アプリの app_id は
+/// handler が名簿を見て弾く (`/@{handle}/{product-slug}/…` の木と混ざらないように)
+pub const RESERVED_PUBLICATION_SLUGS: &[&str] = &[
+    "identity", "apps", "node", "world", "api", "oauth", "errors", "static", "health",
+];
+
+/// 公開物の slug を正規化する。 小文字英数とハイフン、 先頭は英数、 63 文字まで
+/// (Creo Memories の atlas slug と同じ幅)。 予約語は None
+pub fn canonical_slug(input: &str) -> Option<String> {
+    let s = input.trim().to_ascii_lowercase();
+    let mut bytes = s.bytes();
+    let first_ok = bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    let rest_ok = bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    (first_ok && rest_ok && s.len() <= 63 && !RESERVED_PUBLICATION_SLUGS.contains(&s.as_str()))
+        .then_some(s)
 }
 
 /// handle の形 (spec `handle-pattern`、 ADR-002 / 012): `^[a-z0-9][a-z0-9-]{0,30}$`。

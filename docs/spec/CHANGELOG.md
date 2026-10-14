@@ -8,6 +8,8 @@
 
 ### Added
 
+- `resource-type "publication"`（読める公開 URL の索引、ADR-024、server v0.11.0）。`/@{handle}/{slug}` → アプリの公開ページ。登録はアプリが product token（scope `register_publication`）で行う
+- 団体の最初の段（ADR-013 / ADR-024）: `@anycreative`（`account_type = organization`）と `org_membership`。`GET /v1/users/@{handle}` は団体も返し、`accountType` を持つ
 - `resource-type "app"` に `login_url`（ログインを始める URL。Hub の `/start` が link にする、ADR-023）
 - `resource-type "user"` に `usr_id`（Hub が振る `usr_` EntId、ADR-008 の stable key）と `creo_sub`（Creo ID の `sub`、本人だけに見せる）
 - `app.icon_url` を名簿に実際に入れ始めた（migration 010、server v0.9.1）。`/start` が公式アイコンとして描く。spec の型は変わらない
@@ -16,6 +18,7 @@
 
 ### Changed（non-breaking — 制約の緩和）
 
+- `resource-type "organization"` / `"org-membership"` の `ownership` を `creo-id` から `hub` へ（ADR-023 D3 で handle が Hub に来たため、ADR-024）
 - `resource-type "app"` の `manifest_url` を必須から任意へ。段階 1 は管理 API で登録し、各アプリの well-known manifest はまだ配信されていないため。段階 2 で manifest の取得を始めたら必須に戻す
 - `resource-type "user"` の `handle` を必須から任意へ。行は初回接触で作り、handle は claim するまで無い。unique は維持
 - `resource-type "user"` の `email` を必須から任意へ。本物の利用者の email は Creo ID が持つ（ADR-023 D1）
