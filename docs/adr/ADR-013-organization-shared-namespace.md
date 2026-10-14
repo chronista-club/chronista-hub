@@ -87,6 +87,15 @@ reserved-handles [
 - **完全別 entity (`/orgs/{org_id}`)** — path style 分離は UX 悪化、 `/@user` と `/orgs/foo` の混在
 - **Org の reserved を後から追加** — 後出しは squat されたら回収不能、 Phase 1 で確定が経済合理
 
+## 2026-10-14 追記 — 段 1 を実装（ADR-024）
+
+会社の名義 `@anycreative` のために、organization と membership の最初の段を Hub v0.11.0 で入れた。詳細は ADR-024。
+
+- 団体と membership の持ち主は Hub（ADR-023 D3 で handle が Hub に来たため。本 ADR の spec の `ownership "creo-id"` は直した）
+- 団体は `user` table の行（`account_type = organization`）、membership は `org_membership` table（migration 013）
+- 段 1 は持ち主 1 人。団体の作成と招待は API が無く、migration で入れる
+- access control の org-aware 化（visibility と resource の owner）はまだ。今は「名義として公開物を出せるか」だけを membership で見る
+
 ## References
 
 - Memory: `mem_1CaQaWhLANCtbAdGMfi6un`

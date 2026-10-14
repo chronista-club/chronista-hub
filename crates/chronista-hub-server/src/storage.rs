@@ -8,7 +8,8 @@ use serde_json::{Map, Value, json};
 
 use crate::db::Db;
 use crate::model::{
-    AppEntry, AppManifest, AppStatus, HandleReserve, RenameOutcome, Resource, UserEntry, Visibility,
+    AppEntry, AppManifest, AppStatus, HandleReserve, Publication, RenameOutcome, Resource,
+    UserEntry, Visibility,
 };
 
 /// REST の未認証 tree/resource read で **vp-node (federation registry) の非 public を
@@ -546,6 +547,195 @@ impl Storage {
             }
             _ => anyhow::bail!("rename_handle: committed but the row does not show the new handle"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 団体と読める公開 URL (裁定 2026-10-14、 ADR-024)
+    // ------------------------------------------------------------------
+
+    /// 名簿で active なアプリを 1 つ引く。 無い・active でなければ None。
+    pub async fn get_active_app(&self, app_id: &str) -> anyhow::Result<Option<AppEntry>> {
+        let rows: Vec<Value> = self
+            .db
+            .query("SELECT * OMIT id FROM app WHERE app_id = $id AND status = 'active' LIMIT 1")
+            .bind(("id", app_id.to_string()))
+            .await?
+            .take(0)?;
+        rows.into_iter()
+            .next()
+            .map(|v| {
+                serde_json::from_value::<AppRow>(v)
+                    .map(AppEntry::from)
+                    .map_err(anyhow::Error::from)
+            })
+            .transpose()
+    }
+
+    /// 名簿にある全アプリの app_id (status を問わない)。 公開物の slug と木の衝突を避けるのに使う。
+    pub async fn all_app_ids(&self) -> anyhow::Result<Vec<String>> {
+        let ids: Vec<String> = self
+            .db
+            .query("SELECT VALUE app_id FROM app")
+            .await?
+            .take(0)?;
+        Ok(ids)
+    }
+
+    /// 団体での役割。 member でなければ None。
+    pub async fn membership_role(
+        &self,
+        org_usr_id: &str,
+        member_usr_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let roles: Vec<String> = self
+            .db
+            .query(
+                "SELECT VALUE role FROM org_membership
+                 WHERE org_usr_id = $org AND member_usr_id = $member LIMIT 1",
+            )
+            .bind(("org", org_usr_id.to_string()))
+            .bind(("member", member_usr_id.to_string()))
+            .await?
+            .take(0)?;
+        Ok(roles.into_iter().next())
+    }
+
+    /// 団体に人を加える。 段 1 は API が無く、 migration とテストだけが使う
+    /// (招待と役割の変更は後の段)。
+    pub async fn add_member(
+        &self,
+        org_usr_id: &str,
+        member_usr_id: &str,
+        role: &str,
+    ) -> anyhow::Result<()> {
+        self.db
+            .query(
+                "CREATE org_membership CONTENT {
+                    org_usr_id: $org, member_usr_id: $member, role: $role
+                }",
+            )
+            .bind(("org", org_usr_id.to_string()))
+            .bind(("member", member_usr_id.to_string()))
+            .bind(("role", role.to_string()))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    /// 人が所属する団体と役割。 handle の無い団体は名義にならないので除く。
+    pub async fn orgs_of(&self, member_usr_id: &str) -> anyhow::Result<Vec<(UserEntry, String)>> {
+        #[derive(serde::Deserialize)]
+        struct Row {
+            org_usr_id: String,
+            role: String,
+        }
+        let rows: Vec<Value> = self
+            .db
+            .query(
+                // ORDER BY の列は SELECT にも要る (SurrealDB)
+                "SELECT org_usr_id, role, joined_at FROM org_membership
+                 WHERE member_usr_id = $member ORDER BY joined_at",
+            )
+            .bind(("member", member_usr_id.to_string()))
+            .await?
+            .take(0)?;
+        let mut out = Vec::new();
+        for v in rows {
+            let r: Row = serde_json::from_value(v)?;
+            if let Some(org) = self.get_user_by_id(&r.org_usr_id).await?
+                && org.is_organization()
+                && org.handle.is_some()
+            {
+                out.push((org, r.role));
+            }
+        }
+        Ok(out)
+    }
+
+    /// 名義の公開物 (slug 順)。
+    pub async fn list_publications(
+        &self,
+        publisher_usr_id: &str,
+    ) -> anyhow::Result<Vec<Publication>> {
+        let rows: Vec<Value> = self
+            .db
+            .query(
+                "SELECT publisher_usr_id, slug, url, title, app_id, <string> updated_at AS updated_at
+                 FROM publication WHERE publisher_usr_id = $p ORDER BY slug",
+            )
+            .bind(("p", publisher_usr_id.to_string()))
+            .await?
+            .take(0)?;
+        rows.into_iter()
+            .map(|v| Ok(serde_json::from_value(v)?))
+            .collect()
+    }
+
+    pub async fn get_publication(
+        &self,
+        publisher_usr_id: &str,
+        slug: &str,
+    ) -> anyhow::Result<Option<Publication>> {
+        let rows: Vec<Value> = self
+            .db
+            .query(
+                "SELECT publisher_usr_id, slug, url, title, app_id, <string> updated_at AS updated_at
+                 FROM publication WHERE publisher_usr_id = $p AND slug = $s LIMIT 1",
+            )
+            .bind(("p", publisher_usr_id.to_string()))
+            .bind(("s", slug.to_string()))
+            .await?
+            .take(0)?;
+        rows.into_iter()
+            .next()
+            .map(|v| Ok(serde_json::from_value(v)?))
+            .transpose()
+    }
+
+    /// 公開物を登録 / 置き換える。 新しく作ったら true。 created_at は最初の登録のまま。
+    pub async fn put_publication(
+        &self,
+        p: &Publication,
+        actor_usr_id: &str,
+    ) -> anyhow::Result<bool> {
+        retry_on_conflict("put_publication", || async {
+            let existed = self
+                .get_publication(&p.publisher_usr_id, &p.slug)
+                .await?
+                .is_some();
+            self.db
+                .query(
+                    "UPSERT type::record('publication', [$p, $s]) SET
+                        publisher_usr_id = $p, slug = $s, url = $url, title = $title,
+                        app_id = $app, updated_by = $actor, updated_at = time::now()",
+                )
+                .bind(("p", p.publisher_usr_id.clone()))
+                .bind(("s", p.slug.clone()))
+                .bind(("url", p.url.clone()))
+                .bind(("title", p.title.clone()))
+                .bind(("app", p.app_id.clone()))
+                .bind(("actor", actor_usr_id.to_string()))
+                .await?
+                .check()?;
+            Ok(!existed)
+        })
+        .await
+    }
+
+    /// 公開物を消す。 消したら true。
+    pub async fn delete_publication(
+        &self,
+        publisher_usr_id: &str,
+        slug: &str,
+    ) -> anyhow::Result<bool> {
+        let gone: Vec<Value> = self
+            .db
+            .query("DELETE type::record('publication', [$p, $s]) RETURN BEFORE")
+            .bind(("p", publisher_usr_id.to_string()))
+            .bind(("s", slug.to_string()))
+            .await?
+            .take(0)?;
+        Ok(!gone.is_empty())
     }
 
     /// `usr_id` で利用者の行を引く。

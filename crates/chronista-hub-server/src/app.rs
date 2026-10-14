@@ -72,6 +72,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/me", get(me).patch(patch_me))
         .route("/v1/me/handle", axum::routing::put(claim_handle))
         .route("/v1/users/{handle}", get(user_by_handle))
+        // --- 名義と読める公開 URL (ADR-024): 登録はアプリ (product token)、 読むのは誰でも ---
+        .route("/v1/me/publishers", get(my_publishers))
+        .route("/v1/users/{handle}/publications", get(publications_of))
+        .route(
+            "/v1/publications/{handle}/{slug}",
+            axum::routing::put(put_publication).delete(delete_publication),
+        )
         .route("/v1/apps/{app_id}/manifest", get(app_manifest))
         .route("/v1/events", post(post_events))
         // --- admin (X-Admin-Key 必須、 HUB_ADMIN_KEY 未設定なら全て 404) ---
@@ -85,6 +92,9 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/apps/{app_id}/tokens/{token_id}",
             axum::routing::delete(revoke_token),
         )
+        // --- 名義のページ (ADR-019 の canonical `/@{handle}`)。 静的な route が先に当たる ---
+        .route("/{at}", get(crate::profile::profile))
+        .route("/{at}/{slug}", get(crate::profile::publication))
         .with_state(state)
 }
 
@@ -669,11 +679,11 @@ async fn user_by_handle(
         return not_found();
     };
     match st.storage.get_user_by_handle(&h).await? {
-        Some(u) if u.account_type == "user" => match u.public() {
+        // 人と団体は公開の行を持つ。 予約名は public() が None
+        Some(u) => match u.public() {
             Some(p) => Ok(Json(p).into_response()),
             None => not_found(),
         },
-        Some(_) => not_found(),
         // 取り置き中の旧 handle は新しい住所へ案内する (裁定 2026-10-12、 ADR-002 soft redirect)
         None => match st
             .storage
@@ -698,4 +708,353 @@ async fn user_by_handle(
             None => not_found(),
         },
     }
+}
+
+// ============================================================
+// 名義と読める公開 URL (裁定 2026-10-14、 ADR-024)
+// ============================================================
+
+/// 自分が使える名義: 自分 (handle を claim 済みなら) と、 所属する団体 (guest 以外)。
+/// アプリが「公開名義」の選択肢を出すのに使う。
+async fn my_publishers(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let sub = match require_user(&st, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return Ok(*resp),
+    };
+    let me = st.storage.ensure_user(&sub).await?;
+    let mut list = Vec::new();
+    if let Some(p) = me.public() {
+        list.push(json!({
+            "usrId": p.usr_id, "handle": p.handle, "displayName": p.display_name,
+            "accountType": p.account_type, "canonicalPath": p.canonical_path, "role": null,
+        }));
+    }
+    for (org, role) in st.storage.orgs_of(&me.usr_id).await? {
+        if !crate::model::role_can_publish(&role) {
+            continue;
+        }
+        if let Some(p) = org.public() {
+            list.push(json!({
+                "usrId": p.usr_id, "handle": p.handle, "displayName": p.display_name,
+                "accountType": p.account_type, "canonicalPath": p.canonical_path, "role": role,
+            }));
+        }
+    }
+    Ok(Json(json!({ "publishers": list })).into_response())
+}
+
+fn publication_view(handle: &str, p: &crate::model::Publication) -> serde_json::Value {
+    json!({
+        "slug": p.slug,
+        "title": p.title,
+        "url": p.url,
+        "appId": p.app_id,
+        "canonicalPath": format!("/@{handle}/{}", p.slug),
+        "updatedAt": p.updated_at,
+    })
+}
+
+/// 名義の公開物の一覧 (誰でも読める)。 取り置き中の旧 handle は新しい住所へ 301。
+async fn publications_of(
+    State(st): State<AppState>,
+    Path(handle): Path<String>,
+) -> Result<Response, AppError> {
+    let not_found =
+        || Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response());
+    let Some(h) = canonical_handle(strip_handle(&handle)) else {
+        return not_found();
+    };
+    let Some(u) = st.storage.get_user_by_handle(&h).await? else {
+        return match st
+            .storage
+            .resolve_moved_handle(&h)
+            .await?
+            .and_then(|u| u.handle)
+        {
+            Some(new) => Ok((
+                StatusCode::MOVED_PERMANENTLY,
+                [
+                    (header::LOCATION, format!("/v1/users/@{new}/publications")),
+                    (header::CACHE_CONTROL, "no-store".to_string()),
+                ],
+            )
+                .into_response()),
+            None => not_found(),
+        };
+    };
+    if u.public().is_none() {
+        return not_found();
+    }
+    let list: Vec<_> = st
+        .storage
+        .list_publications(&u.usr_id)
+        .await?
+        .iter()
+        .map(|p| publication_view(&h, p))
+        .collect();
+    Ok(Json(json!({ "handle": h, "publications": list })).into_response())
+}
+
+/// 公開物の登録に要る scope (product token)。
+const PUBLICATION_SCOPE: &str = "register_publication";
+
+/// アプリの product token を確かめて app_id を返す。 だめなら 401 / 403 の応答。
+async fn require_app(
+    st: &AppState,
+    headers: &HeaderMap,
+    scope: &str,
+) -> Result<String, Box<Response>> {
+    let bearer = headers.get("authorization").and_then(|v| v.to_str().ok());
+    let app_token = headers.get("x-app-token").and_then(|v| v.to_str().ok());
+    match authenticate(
+        st.verifier.as_ref(),
+        Some(&st.product_tokens),
+        bearer,
+        app_token,
+        &[PrincipalKind::App],
+        &[scope.to_string()],
+    )
+    .await
+    {
+        Ok(crate::auth::Principal::App { app_id, .. }) => Ok(app_id),
+        Err(AuthError::InsufficientScope { missing }) => Err(Box::new(
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "insufficient scope", "missing_scopes": missing })),
+            )
+                .into_response(),
+        )),
+        _ => Err(Box::new(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response(),
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PutPublicationRequest {
+    /// 操作した人の Creo ID `sub`。 アプリが本人を確かめたうえで添える
+    actor_sub: String,
+    url: String,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeletePublicationQuery {
+    actor_sub: String,
+}
+
+/// 登録の前提を確かめる: 名義があり、 actor がその名義を使えること。
+/// 返り値は (名義の行, actor の usr_id)。 だめなら応答。
+async fn check_publisher(
+    st: &AppState,
+    handle: &str,
+    actor_sub: &str,
+) -> Result<Result<(crate::model::UserEntry, String), Box<Response>>, AppError> {
+    let err = |status: StatusCode, msg: &str, reason: &str| {
+        Err(Box::new(
+            (status, Json(json!({ "error": msg, "reason": reason }))).into_response(),
+        ))
+    };
+    let Some(h) = canonical_handle(strip_handle(handle)) else {
+        return Ok(err(
+            StatusCode::NOT_FOUND,
+            "publisher not found",
+            "no_publisher",
+        ));
+    };
+    let Some(publisher) = st
+        .storage
+        .get_user_by_handle(&h)
+        .await?
+        .filter(|u| u.public().is_some())
+    else {
+        return Ok(err(
+            StatusCode::NOT_FOUND,
+            "publisher not found",
+            "no_publisher",
+        ));
+    };
+    if actor_sub.trim().is_empty() {
+        return Ok(err(
+            StatusCode::BAD_REQUEST,
+            "actorSub is required",
+            "no_actor",
+        ));
+    }
+    let actor = st.storage.ensure_user(actor_sub).await?;
+    let allowed = if publisher.is_organization() {
+        st.storage
+            .membership_role(&publisher.usr_id, &actor.usr_id)
+            .await?
+            .is_some_and(|r| crate::model::role_can_publish(&r))
+    } else {
+        publisher.usr_id == actor.usr_id
+    };
+    if !allowed {
+        return Ok(err(
+            StatusCode::FORBIDDEN,
+            "the actor cannot publish under this handle",
+            "not_member",
+        ));
+    }
+    Ok(Ok((publisher, actor.usr_id)))
+}
+
+/// 案内先の URL が、 登録したアプリの host か (home_url / login_url の host と、 その 1 つ上)。
+/// 例: app.creo-memories.in のアプリは creo-memories.in も可。 https だけ、 userinfo は不可
+fn url_belongs_to_app(url: &str, app: &AppEntry) -> bool {
+    let Ok(u) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if u.scheme() != "https" || !u.username().is_empty() || u.password().is_some() {
+        return false;
+    }
+    let Some(host) = u.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    let mut allowed: Vec<String> = Vec::new();
+    for base in [app.home_url.as_deref(), app.login_url.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(h) = reqwest::Url::parse(base)
+            .ok()
+            .and_then(|b| b.host_str().map(str::to_ascii_lowercase))
+        {
+            if let Some((_, parent)) = h.split_once('.')
+                && parent.contains('.')
+            {
+                allowed.push(parent.to_string());
+            }
+            allowed.push(h);
+        }
+    }
+    allowed.contains(&host)
+}
+
+/// 公開物を登録 / 置き換える (アプリ専用、 product token に `register_publication`)。
+/// プラン (Creo Memories の lab 以上) の判定はアプリの責任。 Hub は名義と URL の host を確かめる。
+/// 新規 201 / 更新 200。 別のアプリが持つ slug は 409。
+async fn put_publication(
+    State(st): State<AppState>,
+    Path((handle, slug)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let app_id = match require_app(&st, &headers, PUBLICATION_SCOPE).await {
+        Ok(a) => a,
+        Err(resp) => return Ok(*resp),
+    };
+    let bad =
+        |msg: &str| Ok((StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response());
+    let req: PutPublicationRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => return bad("invalid JSON (actorSub, url, title)"),
+    };
+    let (publisher, actor) = match check_publisher(&st, &handle, &req.actor_sub).await? {
+        Ok(v) => v,
+        Err(resp) => return Ok(*resp),
+    };
+    let Some(slug) = crate::model::canonical_slug(&slug) else {
+        return bad("slug must match ^[a-z0-9][a-z0-9-]{0,62}$ and not be reserved");
+    };
+    if st.storage.all_app_ids().await?.contains(&slug) {
+        return bad("slug is an app id (reserved for the app tree)");
+    }
+    let Some(app) = st.storage.get_active_app(&app_id).await? else {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "the app is not active in the roster" })),
+        )
+            .into_response());
+    };
+    if req.url.len() > 2048 || !url_belongs_to_app(&req.url, &app) {
+        return bad("url must be https on the app's own host");
+    }
+    let title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    if title.as_ref().is_some_and(|t| t.chars().count() > 120) {
+        return bad("title must be 120 characters or fewer");
+    }
+    if let Some(existing) = st.storage.get_publication(&publisher.usr_id, &slug).await?
+        && existing.app_id != app_id
+    {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "the slug belongs to another app" })),
+        )
+            .into_response());
+    }
+    let p = crate::model::Publication {
+        publisher_usr_id: publisher.usr_id.clone(),
+        slug: slug.clone(),
+        url: req.url,
+        title,
+        app_id,
+        updated_at: None,
+    };
+    let created = st.storage.put_publication(&p, &actor).await?;
+    let handle = publisher.handle.clone().unwrap_or_default();
+    tracing::info!(handle, slug, created, "publication registered");
+    let saved = st
+        .storage
+        .get_publication(&publisher.usr_id, &slug)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("publication vanished right after put"))?;
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(publication_view(&handle, &saved))).into_response())
+}
+
+/// 公開物を消す (アプリ専用)。 登録したアプリだけが消せる。 `?actorSub=` で操作した人を添える。
+async fn delete_publication(
+    State(st): State<AppState>,
+    Path((handle, slug)): Path<(String, String)>,
+    Query(q): Query<DeletePublicationQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let app_id = match require_app(&st, &headers, PUBLICATION_SCOPE).await {
+        Ok(a) => a,
+        Err(resp) => return Ok(*resp),
+    };
+    let (publisher, _actor) = match check_publisher(&st, &handle, &q.actor_sub).await? {
+        Ok(v) => v,
+        Err(resp) => return Ok(*resp),
+    };
+    let not_found =
+        || Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response());
+    let Some(slug) = crate::model::canonical_slug(&slug) else {
+        return not_found();
+    };
+    let Some(existing) = st.storage.get_publication(&publisher.usr_id, &slug).await? else {
+        return not_found();
+    };
+    if existing.app_id != app_id {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "the slug belongs to another app" })),
+        )
+            .into_response());
+    }
+    st.storage
+        .delete_publication(&publisher.usr_id, &slug)
+        .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
