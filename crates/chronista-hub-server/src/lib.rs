@@ -10,6 +10,7 @@ pub mod db;
 pub mod event_log;
 pub mod model;
 pub mod product_token;
+pub mod profile;
 pub mod settings;
 pub mod start;
 pub mod storage;

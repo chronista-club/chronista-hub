@@ -132,6 +132,34 @@ const JS: &str = r#"
 
   // 並び (mako 2026-10-11「CreoIDの情報が先頭にあって、そのあと変更できる項目で並べて」):
   // 1. Creo ID が持つもの (見るだけ)  2. ここで変えられるもの (handle、 呼び名)
+  // 名義と読める公開 URL (ADR-024)。 名義 = 自分 (handle があれば) と所属する団体。
+  // 読める公開 URL はアプリ (Creo Memories の lab 以上) が作る。 ここは一覧だけ
+  let names = null;
+  async function loadNames() {
+    try {
+      const { publishers } = await api('GET', '/v1/me/publishers');
+      names = await Promise.all(publishers.map(async (n) => {
+        const { publications } = await api('GET', '/v1/users/@' + encodeURIComponent(n.handle) + '/publications');
+        return { ...n, publications };
+      }));
+    } catch (err) {
+      if (err instanceof Unauthorized) throw err;
+      names = null;
+    }
+  }
+  const roleLabel = (r) => ({ owner: '持ち主', admin: '管理者', member: 'メンバー' }[r] || r);
+  function namesView() {
+    if (names === null) return '';
+    const who = names.length
+      ? `<ul>${names.map((n) => `<li><a href="${esc(n.canonicalPath)}">@${esc(n.handle)}</a> <span class="note">${n.accountType === 'organization' ? '団体・' + esc(roleLabel(n.role)) : 'あなた'}</span></li>`).join('')}</ul>`
+      : '<p class="note">handle を決めると、自分の名義で公開できます。</p>';
+    const pubs = names.flatMap((n) => n.publications.map((p) => `<li><a href="${esc(p.canonicalPath)}">${esc(p.title || p.slug)}</a> <span class="note">@${esc(n.handle)}/${esc(p.slug)}</span></li>`));
+    return `<h2 class="group">名義と読める公開 URL</h2>
+      <section><h3>使える名義</h3>${who}</section>
+      <section><h3>読める公開 URL</h3>${pubs.length ? `<ul>${pubs.join('')}</ul>` : '<p class="note">まだありません。</p>'}
+        <p class="note">読める公開 URL は Creo Memories の lab 以上のプランで、アプリから作れます。ここでは一覧だけ見られます。</p></section>`;
+  }
+
   function view(me, msg) {
     const id = claims(SS.getItem(K.idt) || '');
     const day = 24 * 60 * 60 * 1000;
@@ -166,13 +194,14 @@ const JS: &str = r#"
       <section><h3>呼び名</h3>
         <form id="name"><label>表示される名前 <input name="displayName" maxlength="80" value="${esc(me.displayName || '')}" placeholder="みと"></label>
         <button>保存</button></form>
-        <p class="note">自由に付けられて、同じ名前の人がいても構いません。</p></section>`;
+        <p class="note">自由に付けられて、同じ名前の人がいても構いません。</p></section>
+      ${namesView()}`;
     const claim = document.getElementById('claim');
     const fail = (err) => (err instanceof Unauthorized ? render(err.message) : view(me, err.message));
     const claimMsg = (h) => (me.handle ? '@' + h + ' に変えました。@' + me.handle + ' は 100 日間取り置きします' : '@' + h + ' を claim しました');
     const claimErr = (err) => (err.reason === 'cooldown' ? '次に変えられるのは ' + fmt(err.until) + ' からです' : err.message);
     // 送信中はボタンを止める (二重送信で 2 つ目の rename が走らないように)
-    if (claim) claim.onsubmit = async (e) => { e.preventDefault(); claim.querySelector('button').disabled = true; try { const h = new FormData(claim).get('handle').trim().toLowerCase(); view(await api('PUT', '/v1/me/handle', { handle: h }), claimMsg(h)); } catch (err) { err instanceof Unauthorized ? fail(err) : view(me, claimErr(err)); } };
+    if (claim) claim.onsubmit = async (e) => { e.preventDefault(); claim.querySelector('button').disabled = true; try { const h = new FormData(claim).get('handle').trim().toLowerCase(); const m = await api('PUT', '/v1/me/handle', { handle: h }); await loadNames(); view(m, claimMsg(h)); } catch (err) { err instanceof Unauthorized ? fail(err) : view(me, claimErr(err)); } };
     document.getElementById('name').onsubmit = async (e) => { e.preventDefault(); try { const n = new FormData(e.target).get('displayName'); view(await api('PATCH', '/v1/me', { displayName: n.trim() === '' ? null : n }), '呼び名を保存しました'); } catch (err) { fail(err); } };
     document.getElementById('logout').onclick = logout;
   }
@@ -184,7 +213,7 @@ const JS: &str = r#"
       document.getElementById('login').onclick = login;
       return;
     }
-    try { view(await api('GET', '/v1/me'), msg); } catch (err) { err instanceof Unauthorized ? render(err.message) : (app.innerHTML = `<p class="msg">${esc(err.message)}</p>`); }
+    try { const me = await api('GET', '/v1/me'); await loadNames(); view(me, msg); } catch (err) { err instanceof Unauthorized ? render(err.message) : (app.innerHTML = `<p class="msg">${esc(err.message)}</p>`); }
   }
 
   (async () => {
@@ -213,5 +242,7 @@ mod tests {
         assert!(at("<h2>Creo ID</h2>") < at("<h2 class=\"group\">ここで変えられるもの</h2>"));
         assert!(at("<h2 class=\"group\">ここで変えられるもの</h2>") < at("<h3>handle</h3>"));
         assert!(at("<h3>handle</h3>") < at("<h3>呼び名</h3>"));
+        // 名義と読める公開 URL は変えられる項目のあと (ADR-024)
+        assert!(at("${namesView()}") > at("<h3>呼び名</h3>"));
     }
 }
