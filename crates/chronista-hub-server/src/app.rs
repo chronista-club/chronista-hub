@@ -94,7 +94,9 @@ pub fn build_router(state: AppState) -> Router {
         )
         // --- 名義のページ (ADR-019 の canonical `/@{handle}`)。 静的な route が先に当たる ---
         .route("/{at}", get(crate::profile::profile))
+        .route("/{at}/", get(crate::profile::profile_slash))
         .route("/{at}/{slug}", get(crate::profile::publication))
+        .route("/{at}/{slug}/", get(crate::profile::publication_slash))
         .with_state(state)
 }
 
@@ -872,26 +874,34 @@ async fn check_publisher(
             "no_publisher",
         ));
     };
-    let Some(publisher) = st
-        .storage
-        .get_user_by_handle(&h)
-        .await?
-        .filter(|u| u.public().is_some())
-    else {
+    // 取り置き中の旧 handle は持ち主の今の行として扱う (索引は usr_id に付いている)。
+    // アプリが旧 handle のまま消しに来ても消せるように
+    let publisher = match st.storage.get_user_by_handle(&h).await? {
+        Some(u) => Some(u),
+        None => st.storage.resolve_moved_handle(&h).await?,
+    };
+    let Some(publisher) = publisher.filter(|u| u.public().is_some()) else {
         return Ok(err(
             StatusCode::NOT_FOUND,
             "publisher not found",
             "no_publisher",
         ));
     };
-    if actor_sub.trim().is_empty() {
+    if actor_sub.is_empty() {
         return Ok(err(
             StatusCode::BAD_REQUEST,
             "actorSub is required",
             "no_actor",
         ));
     }
-    let actor = st.storage.ensure_user(actor_sub).await?;
+    // 名簿に行を作らない (アプリの入力で名簿は増やさない)。 行が無い人は名義も membership も持たない
+    let Some(actor) = st.storage.get_user_by_sub(actor_sub).await? else {
+        return Ok(err(
+            StatusCode::FORBIDDEN,
+            "the actor cannot publish under this handle",
+            "not_member",
+        ));
+    };
     let allowed = if publisher.is_organization() {
         st.storage
             .membership_role(&publisher.usr_id, &actor.usr_id)
@@ -911,17 +921,19 @@ async fn check_publisher(
 }
 
 /// 案内先の URL が、 登録したアプリの host か (home_url / login_url の host と、 その 1 つ上)。
-/// 例: app.creo-memories.in のアプリは creo-memories.in も可。 https だけ、 userinfo は不可
-fn url_belongs_to_app(url: &str, app: &AppEntry) -> bool {
-    let Ok(u) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    if u.scheme() != "https" || !u.username().is_empty() || u.password().is_some() {
-        return false;
+/// 例: app.creo-memories.in のアプリは creo-memories.in も可。 https だけ、 userinfo と port は不可。
+/// 良ければ **正規化した形** を返す。 保存と `Location` にはこの形だけを使う (生の文字列は
+/// `\@` や改行のように、 読む側によって host が変わる形を含みうる)
+fn app_url(url: &str, app: &AppEntry) -> Option<String> {
+    let u = reqwest::Url::parse(url).ok()?;
+    if u.scheme() != "https"
+        || !u.username().is_empty()
+        || u.password().is_some()
+        || u.port().is_some()
+    {
+        return None;
     }
-    let Some(host) = u.host_str().map(str::to_ascii_lowercase) else {
-        return false;
-    };
+    let host = u.host_str().map(str::to_ascii_lowercase)?;
     let mut allowed: Vec<String> = Vec::new();
     for base in [app.home_url.as_deref(), app.login_url.as_deref()]
         .into_iter()
@@ -939,7 +951,8 @@ fn url_belongs_to_app(url: &str, app: &AppEntry) -> bool {
             allowed.push(h);
         }
     }
-    allowed.contains(&host)
+    let normalized = u.as_str().to_string();
+    (allowed.contains(&host) && normalized.len() <= 2048).then_some(normalized)
 }
 
 /// 公開物を登録 / 置き換える (アプリ専用、 product token に `register_publication`)。
@@ -978,9 +991,9 @@ async fn put_publication(
         )
             .into_response());
     };
-    if req.url.len() > 2048 || !url_belongs_to_app(&req.url, &app) {
+    let Some(url) = app_url(&req.url, &app) else {
         return bad("url must be https on the app's own host");
-    }
+    };
     let title = req
         .title
         .as_deref()
@@ -1002,7 +1015,7 @@ async fn put_publication(
     let p = crate::model::Publication {
         publisher_usr_id: publisher.usr_id.clone(),
         slug: slug.clone(),
-        url: req.url,
+        url,
         title,
         app_id,
         updated_at: None,

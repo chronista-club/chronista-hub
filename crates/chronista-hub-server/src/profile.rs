@@ -38,11 +38,36 @@ fn moved(location: String) -> Response {
         .into_response()
 }
 
+/// 正しい形の path (小文字、 末尾スラッシュ無し)。 名義の形でなければ None
+fn canonical_path(at: &str, slug: Option<&str>) -> Option<String> {
+    let h = handle_of(at)?;
+    match slug {
+        None => Some(format!("/@{h}")),
+        Some(s) => canonical_slug(s).map(|s| format!("/@{h}/{s}")),
+    }
+}
+
+/// 末尾スラッシュ付きは正しい形へ 301 (spec の trailing-slash-policy)
+pub async fn profile_slash(Path(at): Path<String>) -> Response {
+    canonical_path(&at, None).map_or_else(not_found, moved)
+}
+
+pub async fn publication_slash(Path((at, slug)): Path<(String, String)>) -> Response {
+    canonical_path(&at, Some(&slug)).map_or_else(not_found, moved)
+}
+
 /// 名義のページ。
 pub async fn profile(
     State(st): State<AppState>,
     Path(at): Path<String>,
 ) -> Result<Response, AppError> {
+    let Some(path) = canonical_path(&at, None) else {
+        return Ok(not_found());
+    };
+    // 大文字などは正しい形へ 301 (spec の case-mismatch-action)
+    if path != format!("/{at}") {
+        return Ok(moved(path));
+    }
     let Some(h) = handle_of(&at) else {
         return Ok(not_found());
     };
@@ -101,6 +126,12 @@ pub async fn publication(
     State(st): State<AppState>,
     Path((at, slug)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
+    let Some(path) = canonical_path(&at, Some(&slug)) else {
+        return Ok(not_found());
+    };
+    if path != format!("/{at}/{slug}") {
+        return Ok(moved(path));
+    }
     let (Some(h), Some(slug)) = (handle_of(&at), canonical_slug(&slug)) else {
         return Ok(not_found());
     };

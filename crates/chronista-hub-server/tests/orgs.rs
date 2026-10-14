@@ -175,10 +175,17 @@ async fn the_ship_log_is_reachable_at_its_readable_address() {
     assert_eq!(status, StatusCode::FOUND);
     assert_eq!(headers["location"], SHIP_LOG);
     assert_eq!(headers["cache-control"], "no-store");
-    // 大文字でも同じ住所
-    let (status, headers, _) = h.get("/@AnyCreative/Ship-Log", None).await;
-    assert_eq!(status, StatusCode::FOUND);
-    assert_eq!(headers["location"], SHIP_LOG);
+    // 大文字と末尾スラッシュは正しい形へ 301 (spec の path-schema)
+    for (asked, canonical) in [
+        ("/@AnyCreative/Ship-Log", "/@anycreative/ship-log"),
+        ("/@anycreative/ship-log/", "/@anycreative/ship-log"),
+        ("/@AnyCreative", "/@anycreative"),
+        ("/@anycreative/", "/@anycreative"),
+    ] {
+        let (status, headers, _) = h.get(asked, None).await;
+        assert_eq!(status, StatusCode::MOVED_PERMANENTLY, "{asked}");
+        assert_eq!(headers["location"], canonical, "{asked}");
+    }
     // 名義のページに並ぶ
     let (status, headers, body) = h.get("/@anycreative", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -377,6 +384,8 @@ async fn the_url_must_be_on_the_apps_own_host() {
         "https://evil.example/r/atl_x",
         "https://app.creo-memories.in.evil.example/x",
         "https://user@app.creo-memories.in/r/atl_x",
+        "https://app.creo-memories.in:8443/r/atl_x",
+        "https://app.creo-memories.in./r/atl_x",
         "https://in/x",
         "javascript:alert(1)",
         "not a url",
@@ -395,6 +404,69 @@ async fn the_url_must_be_on_the_apps_own_host() {
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{v}");
+    // 保存と案内は正規化した形だけ。 読む側で host が変わる形 (`\@`、 改行) は残らない
+    for (raw, stored) in [
+        (
+            "https://app.creo-memories.in\\@evil.example/x",
+            "https://app.creo-memories.in/@evil.example/x",
+        ),
+        (
+            "https://app.creo-memories.in/r/a\r\nb",
+            "https://app.creo-memories.in/r/ab",
+        ),
+        (
+            "HTTPS://APP.creo-memories.in/r/atl_x",
+            "https://app.creo-memories.in/r/atl_x",
+        ),
+        (
+            " https://app.creo-memories.in/r/atl_x",
+            "https://app.creo-memories.in/r/atl_x",
+        ),
+    ] {
+        let (status, v) = h
+            .publish(&t, "@mito/norm", json!({ "actorSub": MITO, "url": raw }))
+            .await;
+        assert!(status.is_success(), "{raw}: {status} {v}");
+        assert_eq!(v["url"], stored, "{raw}");
+        let (status, headers, _) = h.get("/@mito/norm", None).await;
+        assert_eq!(status, StatusCode::FOUND);
+        assert_eq!(headers["location"], stored, "{raw}");
+    }
+}
+
+#[tokio::test]
+async fn app_input_never_adds_people_to_the_roster() {
+    let h = hub().await;
+    let t = h.token("creo-memories", &["register_publication"]).await;
+    let count = || async {
+        let n: Option<i64> =
+            h.db.query("RETURN count((SELECT id FROM user))")
+                .await
+                .unwrap()
+                .take(0)
+                .unwrap();
+        n.unwrap()
+    };
+    let before = count().await;
+    for (path, actor) in [
+        ("@anycreative/notes", "junk|1"),
+        ("@anycreative/Bad_Slug", "junk|2"),
+        ("@anycreative/x", " junk|3"),
+    ] {
+        let (status, v) = h
+            .publish(
+                &t,
+                path,
+                json!({ "actorSub": actor, "url": "https://app.creo-memories.in/r/x" }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {v}");
+    }
+    assert_eq!(
+        h.unpublish(&t, "@anycreative/ship-log", "junk|4").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(count().await, before, "the roster did not grow");
 }
 
 #[tokio::test]
@@ -472,7 +544,7 @@ async fn another_apps_slug_cannot_be_taken_over() {
         h.unpublish(&gfp, "@anycreative/ship-log", MITO).await,
         StatusCode::CONFLICT
     );
-    // 名簿で active でないアプリ (vantage-point は host を持たない) は登録できない
+    // 名簿に host を持たないアプリ (vantage-point は CLI で home_url / login_url が無い) は案内先を持てない
     let vp = h.token("vantage-point", &["register_publication"]).await;
     let (status, _) = h
         .publish(
@@ -482,6 +554,23 @@ async fn another_apps_slug_cannot_be_taken_over() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn apps_that_are_not_active_cannot_register() {
+    let h = hub().await;
+    let mito = h.usr_id(MITO).await;
+    h.storage().add_member(ORG, &mito, "owner").await.unwrap();
+    // GFP は pending (migration 011)
+    let gfp = h.token("gfp", &["register_publication"]).await;
+    let (status, v) = h
+        .publish(
+            &gfp,
+            "@anycreative/gfp-notes",
+            json!({ "actorSub": MITO, "url": "https://app.gfp.works/x" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{v}");
 }
 
 #[tokio::test]
@@ -506,6 +595,12 @@ async fn renamed_handles_guide_to_the_new_address() {
     let (status, headers, _) = h.get("/v1/users/@mito/publications", None).await;
     assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
     assert_eq!(headers["location"], "/v1/users/@mito-2/publications");
+    // アプリが旧 handle のまま消しに来ても、 同じ名義のものとして消せる
+    assert_eq!(
+        h.unpublish(&t, "@mito/log", MITO).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(h.get("/@mito-2/log", None).await.0, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

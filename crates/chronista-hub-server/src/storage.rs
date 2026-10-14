@@ -591,7 +591,7 @@ impl Storage {
             .db
             .query(
                 "SELECT VALUE role FROM org_membership
-                 WHERE org_usr_id = $org AND member_usr_id = $member LIMIT 1",
+                 WHERE org_user = $org AND member_user = $member LIMIT 1",
             )
             .bind(("org", org_usr_id.to_string()))
             .bind(("member", member_usr_id.to_string()))
@@ -611,7 +611,7 @@ impl Storage {
         self.db
             .query(
                 "CREATE org_membership CONTENT {
-                    org_usr_id: $org, member_usr_id: $member, role: $role
+                    org_user: $org, member_user: $member, role: $role
                 }",
             )
             .bind(("org", org_usr_id.to_string()))
@@ -626,15 +626,15 @@ impl Storage {
     pub async fn orgs_of(&self, member_usr_id: &str) -> anyhow::Result<Vec<(UserEntry, String)>> {
         #[derive(serde::Deserialize)]
         struct Row {
-            org_usr_id: String,
+            org_user: String,
             role: String,
         }
         let rows: Vec<Value> = self
             .db
             .query(
                 // ORDER BY の列は SELECT にも要る (SurrealDB)
-                "SELECT org_usr_id, role, joined_at FROM org_membership
-                 WHERE member_usr_id = $member ORDER BY joined_at",
+                "SELECT org_user, role, joined_at FROM org_membership
+                 WHERE member_user = $member ORDER BY joined_at",
             )
             .bind(("member", member_usr_id.to_string()))
             .await?
@@ -642,7 +642,7 @@ impl Storage {
         let mut out = Vec::new();
         for v in rows {
             let r: Row = serde_json::from_value(v)?;
-            if let Some(org) = self.get_user_by_id(&r.org_usr_id).await?
+            if let Some(org) = self.get_user_by_id(&r.org_user).await?
                 && org.is_organization()
                 && org.handle.is_some()
             {

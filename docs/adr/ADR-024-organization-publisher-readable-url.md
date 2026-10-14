@@ -48,6 +48,9 @@ mako「読める公開 URL　<-ここが綺麗かな。有料化するとした�
 - だから索引への登録は **アプリが product token で行う**（scope `register_publication`）。アプリは本人とプランを確かめたうえで、操作した人の Creo ID `sub`（`actorSub`）を添える
 - Hub が確かめるのは 3 つ: 名義があること、actor がその名義を使えること（本人、または団体の guest 以外）、案内先がそのアプリの host（home_url / login_url の host とその 1 つ上）であること
 - 利用者が Hub に直接登録する道は作らない（プランの判定を素通りするため）
+- `actorSub` はアプリの言い分をそのまま信じる。scope を持つアプリは、どの利用者としても（その人が所属する団体としても）登録できる。ただし案内先は自分の host だけ、書き換えと削除は自分が登録した slug だけ。token は管理者が発行する（live は stub の app token を受け付けない。scratch の `STUB_APP_TOKEN_ALLOWED` は誰でも作れるので、scratch の索引は信用しない）
+- アプリの入力で名簿に行を作らない。`actorSub` の人が Hub の名簿に居なければ 403
+- 案内先は正規化した形（`reqwest::Url` の `as_str()`）で保存し、`Location` もその形で出す。port 付きは不可
 - 解約したときに読める URL をどうするかは、Creo Memories の段で決める（提案: 404 にせず ID の公開ページへ案内し続け、新規だけ止める）
 
 ### D4. API
@@ -56,10 +59,10 @@ mako「読める公開 URL　<-ここが綺麗かな。有料化するとした�
 |---|---|---|
 | `GET /v1/me/publishers` | 人（user-jwt） | 自分が使える名義。自分（handle があれば）と所属する団体（guest 以外）。アプリが「公開名義」の選択肢に使う |
 | `PUT /v1/publications/@{handle}/{slug}` | アプリ（product token） | 登録 / 置き換え。body `{ actorSub, url, title? }`。新規 201、更新 200、別のアプリの slug は 409 |
-| `DELETE /v1/publications/@{handle}/{slug}?actorSub=` | アプリ | 登録したアプリだけが消せる |
+| `DELETE /v1/publications/@{handle}/{slug}?actorSub=` | アプリ | 登録したアプリだけが消せる。actor の確認は PUT と同じ。取り置き中の旧 handle でも消せる |
 | `GET /v1/users/@{handle}/publications` | 誰でも | 名義の公開物の一覧 |
 | `GET /v1/users/@{handle}` | 誰でも | 団体も返す。`accountType` を足した |
-| `GET /@{handle}` / `GET /@{handle}/{slug}` | 誰でも | 名義のページ / 302 で案内（no-store） |
+| `GET /@{handle}` / `GET /@{handle}/{slug}` | 誰でも | 名義のページ / 302 で案内（no-store）。大文字と末尾スラッシュは正しい形へ 301（spec の path-schema） |
 
 slug は小文字英数とハイフン、63 文字まで（Creo Memories の atlas slug と同じ幅）。`identity` などの予約語と、名簿にある app_id（`/@{handle}/{product-slug}/…` の木と混ざらないように）は使えない。
 
@@ -85,6 +88,7 @@ Creo Memories が登録できるようになるまでのつなぎとして、wee
 
 - アプリは Hub の product token を持ち、公開の変化を Hub に伝える責任を負う（伝え漏れると索引が古いまま残る。案内先が 404 になるだけで、非公開の中身は漏れない。公開の判定はアプリの公開ページがする）
 - 段 1 の団体は migration でしか作れない
+- `register_publication` を持つアプリは、その host の中でなら誰の名義でも登録できる（D3）。アプリの token の管理が名義の守りになる
 
 ## 却下案
 
