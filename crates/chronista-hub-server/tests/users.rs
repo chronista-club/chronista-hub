@@ -346,7 +346,8 @@ async fn the_same_handle_again_is_idempotent() {
 
 /// cooldown を抜けた状態にする (31 日前に rename したことにする)。
 async fn after_the_cooldown(db: &chronista_hub_server::db::Db, usr_id: &str) {
-    db.query("UPDATE user SET handle_changed_at = time::now() - 31d WHERE usr_id = $usr_id")
+    db.conn()
+        .query("UPDATE user SET handle_changed_at = time::now() - 31d WHERE usr_id = $usr_id")
         .bind(("usr_id", usr_id.to_string()))
         .await
         .unwrap()
@@ -356,7 +357,8 @@ async fn after_the_cooldown(db: &chronista_hub_server::db::Db, usr_id: &str) {
 
 /// 取り置きの期限を切らす (101 日前に rename したことにする)。
 async fn after_the_reserve(db: &chronista_hub_server::db::Db, handle: &str) {
-    db.query("UPDATE type::record('handle_reserve', $h) SET expires_at = time::now() - 1d")
+    db.conn()
+        .query("UPDATE type::record('handle_reserve', $h) SET expires_at = time::now() - 1d")
         .bind(("h", handle.to_string()))
         .await
         .unwrap()
@@ -479,7 +481,8 @@ async fn a_stale_second_rename_does_not_drop_the_fresh_reserve() {
     let (_, me) = claim(&r, Some(MITO), json!({ "handle": "bb" })).await;
     let usr_id = me["usrId"].as_str().unwrap();
     // 2 つ目の要求は cooldown の pre-check を通っていた、 という状況を作る
-    db.query("UPDATE user SET handle_changed_at = NONE WHERE usr_id = $usr_id")
+    db.conn()
+        .query("UPDATE user SET handle_changed_at = NONE WHERE usr_id = $usr_id")
         .bind(("usr_id", usr_id.to_string()))
         .await
         .unwrap()

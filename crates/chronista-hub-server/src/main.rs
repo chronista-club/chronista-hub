@@ -54,6 +54,16 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(count = applied.len(), "migrations applied");
     }
 
+    // DB の見張り (incident 2026-10-15): 起動時に 1 回点検し、 以後は定期 + 要求の失敗で点検する。
+    // remote で問い合わせが通らなければ接続を作り直す
+    let first = db.check().await;
+    tracing::info!(
+        ok = first.ok,
+        every_secs = cfg.db_check_secs,
+        "db watchdog started"
+    );
+    let _watchdog = db.spawn_watchdog(std::time::Duration::from_secs(cfg.db_check_secs));
+
     let storage = Storage::new(db.clone());
     let event_log = EventLog::new(db.clone());
     let product_tokens = ProductTokenStore::new(db.clone());

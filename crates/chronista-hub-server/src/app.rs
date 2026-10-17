@@ -37,18 +37,86 @@ pub struct AppState {
     pub version: String,
 }
 
-/// 500 に落とすための anyhow ラッパ。
+/// handler のエラー。 DB に届かない類は 503 (見張りを起こす)、 それ以外は 500。
 pub struct AppError(anyhow::Error);
+
+/// 応答が「DB に届かなかった」ことの印。 middleware がこれを見て DB の見張りを起こす
+#[derive(Debug, Clone, Copy)]
+pub struct DbUnavailable;
+
+/// DB に届かないときの応答: 503 + `Retry-After` + [`DbUnavailable`] (middleware が見張りを起こす)
+pub(crate) fn db_unavailable() -> Response {
+    let mut resp = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::RETRY_AFTER, "5")],
+        Json(json!({ "error": "database unavailable" })),
+    )
+        .into_response();
+    resp.extensions_mut().insert(DbUnavailable);
+    resp
+}
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         // 詳細は log のみに出し、 クライアントには固定メッセージ (内部情報の漏洩防止)。
+        if crate::db::is_unavailable(&self.0) {
+            tracing::error!(error = %self.0, "database unavailable");
+            return db_unavailable();
+        }
         tracing::error!(error = %self.0, "internal server error");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "internal server error" })),
         )
             .into_response()
+    }
+}
+
+/// 要求の時間の上限。 DB が落ちている間、 SDK はつなぎ直すまで問い合わせを抱えて待たせるので、
+/// 上限が無いと要求が返事をしないまま積み上がる (2026-10-18 に手元で確認)
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// 要求の見張り役 (ADR-022 追記):
+/// - 上限を超えた要求は打ち切り、 DB の見張りを起こす。 読むだけの要求 (GET / HEAD) は
+///   503 + `Retry-After` (やり直してよい)。 書く要求は 504 で `Retry-After` を付けない:
+///   SDK は抱えた問い合わせを DB が戻ったときに流すので、 打ち切っても書き込みが後から
+///   成立しうる (結果は不明)
+/// - DB に届かなかった応答 ([`DbUnavailable`]) のあとも、 見張りにすぐ点検させる (定期の点検を待たない)
+async fn guard_db(
+    State(st): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let read_only = matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    );
+    match tokio::time::timeout(REQUEST_TIMEOUT, next.run(req)).await {
+        Ok(resp) => {
+            if resp.extensions().get::<DbUnavailable>().is_some() {
+                st.storage.db().kick();
+            }
+            resp
+        }
+        Err(_) => {
+            tracing::error!(
+                timeout_secs = REQUEST_TIMEOUT.as_secs(),
+                read_only,
+                "request timed out (database unreachable?)"
+            );
+            st.storage.db().kick();
+            if read_only {
+                let mut resp = db_unavailable();
+                *resp.body_mut() = axum::body::Body::from(r#"{"error":"timed out"}"#);
+                resp
+            } else {
+                (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    Json(json!({ "error": "timed out; the result is unknown" })),
+                )
+                    .into_response()
+            }
+        }
     }
 }
 
@@ -62,6 +130,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/health", get(health))
+        .route("/health/deep", get(health_deep))
         .route("/start", get(crate::start::start))
         .route("/settings", get(crate::settings::settings))
         .route("/v1/tree/{handle}", get(tree_by_handle))
@@ -97,6 +166,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/{at}/", get(crate::profile::profile_slash))
         .route("/{at}/{slug}", get(crate::profile::publication))
         .route("/{at}/{slug}/", get(crate::profile::publication_slash))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            guard_db,
+        ))
         .with_state(state)
 }
 
@@ -104,18 +177,40 @@ async fn root(State(st): State<AppState>) -> Response {
     Json(json!({ "service": st.service, "version": st.version })).into_response()
 }
 
+/// 浅い確認 (ADR-014: shallow)。 プロセスが応答できれば 200。 `db` に見張りの最後の点検結果を
+/// 載せるが、 DB の状態では落とさない (依存先を見るのは `/health/deep`)
 async fn health(State(st): State<AppState>) -> Response {
+    Json(health_body(&st, "ok")).into_response()
+}
+
+/// 深い確認 (ADR-014: deep、 依存先の検証)。 DB は見張りの最後の点検結果で判断し
+/// (要求ごとには問い合わせない)、 届かなければ 503 / `status: degraded`。
+/// 2026-10-15 は DB が死んでいても浅い `/health` しか無く、 ok に見えていた
+async fn health_deep(State(st): State<AppState>) -> Response {
+    let db = st.storage.db().health();
+    if db.ok {
+        Json(health_body(&st, "ok")).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(health_body(&st, "degraded")),
+        )
+            .into_response()
+    }
+}
+
+fn health_body(st: &AppState, status: &str) -> serde_json::Value {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    Json(json!({
-        "status": "ok",
+    json!({
+        "status": status,
         "service": st.service,
         "version": st.version,
         "timestamp": ts,
-    }))
-    .into_response()
+        "db": st.storage.db().health(),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,6 +321,7 @@ async fn post_events(
             )
                 .into_response());
         }
+        Err(AuthError::Unavailable) => return Ok(db_unavailable()),
         Err(AuthError::InsufficientScope { missing }) => {
             return Ok((
                 StatusCode::FORBIDDEN,
@@ -829,6 +925,7 @@ async fn require_app(
             )
                 .into_response(),
         )),
+        Err(AuthError::Unavailable) => Err(Box::new(db_unavailable())),
         _ => Err(Box::new(
             (
                 StatusCode::UNAUTHORIZED,
@@ -1070,4 +1167,81 @@ async fn delete_publication(
         .delete_publication(&publisher.usr_id, &slug)
         .await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::StubVerifier;
+    use crate::db::connect_mem;
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    async fn router() -> (Router, crate::db::Db) {
+        let db = connect_mem("chronista", "app-tests").await.unwrap();
+        let r = build_router(AppState {
+            storage: Storage::new(db.clone()),
+            event_log: EventLog::new(db.clone()),
+            verifier: Arc::new(StubVerifier),
+            product_tokens: ProductTokenStore::new(db.clone()),
+            admin_key: None,
+            issuer: "https://id.creo-memories.in/".into(),
+            settings: None,
+            service: "chronista-hub".into(),
+            version: "0.0.1".into(),
+        });
+        (r, db)
+    }
+
+    async fn get(r: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let resp = r
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn deep_health_turns_503_when_the_database_is_down_and_shallow_stays_200() {
+        let (r, db) = router().await;
+        for uri in ["/health", "/health/deep"] {
+            let (status, v) = get(&r, uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert_eq!(v["status"], "ok");
+            assert_eq!(v["db"]["ok"], true);
+        }
+        // 2026-10-15 は DB が死んでいても ok に見えていた
+        db.record(Err(anyhow::anyhow!("Session not found: 47a7bd1b")));
+        let (status, v) = get(&r, "/health/deep").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(v["status"], "degraded");
+        assert_eq!(v["db"]["ok"], false);
+        // 外には壊れ方の分類だけ (生の文言は log)
+        assert_eq!(v["db"]["lastError"], "session");
+        // 浅い確認はプロセスの生存だけを見る (ADR-014)。 db の状態は載せる
+        let (status, v) = get(&r, "/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["db"]["ok"], false);
+        // 戻れば ok。 最後の壊れ方は記録として残る
+        db.check().await;
+        let (status, v) = get(&r, "/health/deep").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["db"]["lastError"], "session");
+    }
+
+    #[test]
+    fn database_errors_are_503_with_retry_after_and_others_stay_500() {
+        let resp = AppError(anyhow::anyhow!("Session not found: 47a7bd1b")).into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers()[header::RETRY_AFTER], "5");
+        assert!(resp.extensions().get::<DbUnavailable>().is_some());
+        let resp = AppError(anyhow::anyhow!("Parse error")).into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(resp.extensions().get::<DbUnavailable>().is_none());
+    }
 }

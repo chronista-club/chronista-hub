@@ -440,7 +440,8 @@ async fn app_input_never_adds_people_to_the_roster() {
     let t = h.token("creo-memories", &["register_publication"]).await;
     let count = || async {
         let n: Option<i64> =
-            h.db.query("RETURN count((SELECT id FROM user))")
+            h.db.conn()
+                .query("RETURN count((SELECT id FROM user))")
                 .await
                 .unwrap()
                 .take(0)
@@ -524,7 +525,8 @@ async fn slugs_follow_the_rules() {
 async fn another_apps_slug_cannot_be_taken_over() {
     let h = hub().await;
     // GFP は pending (migration 011)。 このテストでだけ active にする
-    h.db.query("UPDATE type::record('app', 'gfp') SET status = 'active'")
+    h.db.conn()
+        .query("UPDATE type::record('app', 'gfp') SET status = 'active'")
         .await
         .unwrap()
         .check()
