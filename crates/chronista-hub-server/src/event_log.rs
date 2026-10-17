@@ -50,6 +50,7 @@ impl EventLog {
         }
         let existing: Vec<String> = self
             .db
+            .conn()
             .query("SELECT VALUE event_id FROM hub_event WHERE event_id = $event_id LIMIT 1")
             .bind(("event_id", event.event_id.clone()))
             .await?
@@ -66,6 +67,7 @@ impl EventLog {
             received_at: now_ms(),
         };
         self.db
+            .conn()
             .query("CREATE type::record('hub_event', $event_id) CONTENT $content")
             .bind(("event_id", event.event_id.clone()))
             .bind(("content", serde_json::to_value(&content)?))
@@ -86,7 +88,7 @@ impl EventLog {
         let sql = format!(
             "SELECT * FROM hub_event WHERE processed_at IS NONE AND failed_at IS NONE ORDER BY received_at{limit_clause}"
         );
-        let rows: Vec<Value> = self.db.query(sql).await?.take(0)?;
+        let rows: Vec<Value> = self.db.conn().query(sql).await?.take(0)?;
         rows.into_iter()
             .map(|v| serde_json::from_value::<StoredEvent>(v).map_err(anyhow::Error::from))
             .collect()
@@ -100,7 +102,7 @@ impl EventLog {
         error: &str,
         max_retries: i64,
     ) -> anyhow::Result<()> {
-        self.db
+        self.db.conn()
             .query(
                 "UPDATE type::record('hub_event', $id) SET retry_count = (retry_count ?? 0) + 1, last_error = $err;
                  UPDATE type::record('hub_event', $id) SET failed_at = time::now() WHERE (retry_count ?? 0) >= $max AND failed_at IS NONE;",
@@ -115,6 +117,7 @@ impl EventLog {
 
     pub async fn mark_processed(&self, event_id: &str) -> anyhow::Result<()> {
         self.db
+            .conn()
             .query("UPDATE type::record('hub_event', $event_id) SET processed_at = $now")
             .bind(("event_id", event_id.to_string()))
             .bind(("now", now_ms()))
@@ -126,6 +129,7 @@ impl EventLog {
     pub async fn has_idempotency(&self, key: &str) -> anyhow::Result<bool> {
         let rows: Vec<String> = self
             .db
+            .conn()
             .query("SELECT VALUE idempotency FROM hub_event WHERE idempotency = $key LIMIT 1")
             .bind(("key", key.to_string()))
             .await?

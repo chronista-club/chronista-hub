@@ -112,6 +112,25 @@ SurrealDB live（port 18001）に `chronista` namespace / `hub` database を切�
 インデックス 7・INSERT 4 文で、root 権限の要る文は含まれない。`hub` user での import、新 Hub の起動（migration `count=0`）、
 `/v1/tree` の移行前後一致まで確認済み。
 
+## 2026-10-16 追記 — 接続の持ち方と、壊れたときの回復
+
+mako「この辺しっかり整えていこう。リファクタリングも視野に入れて。」（incident mem_1Cg4RqmK1LPyTVckSCeQV5 を受けて）
+
+**起きたこと（2026-10-15）**: live の Hub が SurrealDB に出す新しい要求が全部 `Session not found: <uuid>` で失敗し、DB を使う API と画面がすべて 500 になった。`/health` は DB を触らないので ok のまま。consumer（起動時に作った接続で 1 秒ごとに読む）は最後まで失敗しなかった。Hub の再起動で戻った。SurrealDB は止まっていない。
+
+**分かったこと**: SDK 3.x の `Surreal::clone()` はサーバ上に新しいセッションを作る（Attach、signin、use を replay）。Hub の `Storage` / `EventLog` / `ProductTokenStore` は `Surreal<Any>` をそのまま持ち、axum が要求ごとに state を clone するので、**要求ごとにセッションを作って捨てていた**。壊れたのはこの「新しく作るセッション」だけ。手元で SurrealDB の再起動、token の期限切れ（10 秒）を試したが再現せず、引き金は特定できていない。SDK 3.3 で ws engine のセッション再構築（replay の完了を待ってから要求を流す、期限切れ token の扱い）が直っているが、live の server は 3.2.4 なので SDK だけ先に上げるのは見送る（server と一緒に上げる）。
+
+**決めたこと**（引き金に依らず戻れる形）:
+
+1. **接続は 1 本を共有する**: `db::Db` は `Arc` で 1 本の接続を持つ型。clone しても SDK のセッションは増えない。呼び出し側は `db.conn()`（`Arc<Surreal<Any>>`）で問い合わせる。壊れるときは全部一緒に壊れ、見張りが必ず気づける
+2. **見張り**: `Db::check` が `INFO FOR DB`（認証と ns / db の選択が生きていないと通らない、5 秒で timeout）を問い合わせ、失敗したら remote のときだけ接続を作り直してもう一度問い合わせる。作り直しは同時に 1 回にまとめる。`Db::spawn_watchdog` が `CHRONISTA_HUB_DB_CHECK_SECS`（既定 10 秒）ごとに点検する。embedded（mem / rocksdb）は作り直さない（mem は開き直すと空になる）
+3. **要求の失敗からすぐ点検**: SDK の「届かない・セッションが壊れた」類のエラー（`db::is_unavailable`、文言で分ける）は 503 + `Retry-After: 5` + `{"error":"database unavailable"}`。この応答のあと middleware が `Db::kick` で見張りを起こす。`/start` と consumer も同じ類の失敗で kick する
+4. **外から見える**: `/health` は見張りの最後の点検結果を `db`（`ok` / `checkedAt` / `lastError` / `lastErrorAt` / `reconnects`）として返し、DB に届かなければ **503 / `status: degraded`**。要求ごとには DB に問い合わせない
+
+テスト: `db` の単体（clone は接続を共有する、embedded は作り直さない、エラーの分類）、`/health` と AppError、実 SurrealDB を使う `tests/db_resilience.rs`（`CHRONISTA_HUB_SURREAL_TEST_URL` で gate。認証を外して壊した接続を点検が作り直す、同時の点検で作り直しは 1 回、kick で見張りが起きる）。
+
+**残り**: SurrealDB server と SDK を一緒に 3.3 系へ上げる（fleetstage の storage と相談）。
+
 ## 却下案
 
 - **snapshot export（選択肢 1）** — 却下: 見られるのが export 時点のみで、ライブ調査の要求を満たさない

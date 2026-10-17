@@ -37,12 +37,27 @@ pub struct AppState {
     pub version: String,
 }
 
-/// 500 に落とすための anyhow ラッパ。
+/// handler のエラー。 DB に届かない類は 503 (見張りを起こす)、 それ以外は 500。
 pub struct AppError(anyhow::Error);
+
+/// 応答が「DB に届かなかった」ことの印。 middleware がこれを見て DB の見張りを起こす
+#[derive(Debug, Clone, Copy)]
+pub struct DbUnavailable;
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         // 詳細は log のみに出し、 クライアントには固定メッセージ (内部情報の漏洩防止)。
+        if crate::db::is_unavailable(&self.0) {
+            tracing::error!(error = %self.0, "database unavailable");
+            let mut resp = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::RETRY_AFTER, "5")],
+                Json(json!({ "error": "database unavailable" })),
+            )
+                .into_response();
+            resp.extensions_mut().insert(DbUnavailable);
+            return resp;
+        }
         tracing::error!(error = %self.0, "internal server error");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -50,6 +65,19 @@ impl IntoResponse for AppError {
         )
             .into_response()
     }
+}
+
+/// DB に届かなかった応答のあと、 見張りにすぐ点検させる (定期の点検を待たない)。
+async fn kick_db_watchdog(
+    State(st): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let resp = next.run(req).await;
+    if resp.extensions().get::<DbUnavailable>().is_some() {
+        st.storage.db().kick();
+    }
+    resp
 }
 
 impl<E: Into<anyhow::Error>> From<E> for AppError {
@@ -97,6 +125,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/{at}/", get(crate::profile::profile_slash))
         .route("/{at}/{slug}", get(crate::profile::publication))
         .route("/{at}/{slug}/", get(crate::profile::publication_slash))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            kick_db_watchdog,
+        ))
         .with_state(state)
 }
 
@@ -104,18 +136,30 @@ async fn root(State(st): State<AppState>) -> Response {
     Json(json!({ "service": st.service, "version": st.version })).into_response()
 }
 
+/// 生きているか + DB に届くか。 DB は見張りの最後の点検結果 (要求ごとには問い合わせない)。
+/// DB に届かなければ 503 / `status: degraded` (2026-10-15 の障害では DB が死んでいても ok を返していた)
 async fn health(State(st): State<AppState>) -> Response {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    Json(json!({
-        "status": "ok",
-        "service": st.service,
-        "version": st.version,
-        "timestamp": ts,
-    }))
-    .into_response()
+    let db = st.storage.db().health();
+    let (code, status) = if db.ok {
+        (StatusCode::OK, "ok")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "degraded")
+    };
+    (
+        code,
+        Json(json!({
+            "status": status,
+            "service": st.service,
+            "version": st.version,
+            "timestamp": ts,
+            "db": db,
+        })),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1070,4 +1114,79 @@ async fn delete_publication(
         .delete_publication(&publisher.usr_id, &slug)
         .await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::StubVerifier;
+    use crate::db::connect_mem;
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    async fn router() -> (Router, crate::db::Db) {
+        let db = connect_mem("chronista", "app-tests").await.unwrap();
+        let r = build_router(AppState {
+            storage: Storage::new(db.clone()),
+            event_log: EventLog::new(db.clone()),
+            verifier: Arc::new(StubVerifier),
+            product_tokens: ProductTokenStore::new(db.clone()),
+            admin_key: None,
+            issuer: "https://id.creo-memories.in/".into(),
+            settings: None,
+            service: "chronista-hub".into(),
+            version: "0.0.1".into(),
+        });
+        (r, db)
+    }
+
+    async fn health(r: &Router) -> (StatusCode, serde_json::Value) {
+        let resp = r
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn health_reports_the_database_and_turns_503_when_it_is_down() {
+        let (r, db) = router().await;
+        let (status, v) = health(&r).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["db"]["ok"], true);
+        // 2026-10-15 は DB が死んでいても ok を返していた
+        db.record(Err(anyhow::anyhow!("Session not found: x")));
+        let (status, v) = health(&r).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(v["status"], "degraded");
+        assert_eq!(v["db"]["ok"], false);
+        assert_eq!(v["db"]["lastError"], "Session not found: x");
+        // 戻れば ok。 最後のエラーは記録として残る
+        db.check().await;
+        let (status, v) = health(&r).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["db"]["lastError"], "Session not found: x");
+    }
+
+    #[test]
+    fn database_errors_are_503_with_retry_after_and_others_stay_500() {
+        let resp = AppError(anyhow::anyhow!("Session not found: 47a7bd1b")).into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers()[header::RETRY_AFTER], "5");
+        assert!(resp.extensions().get::<DbUnavailable>().is_some());
+        let resp = AppError(anyhow::anyhow!("Parse error")).into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(resp.extensions().get::<DbUnavailable>().is_none());
+    }
 }

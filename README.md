@@ -81,6 +81,11 @@ DB 接続先 (ADR-022): `CHRONISTA_HUB_DB_URL` が `rocksdb://<dir>` なら embe
 remote の signin は `SURREALDB_USERNAME` / `SURREALDB_PASSWORD` / `SURREALDB_AUTH_LEVEL`
 (`database` default / `namespace` / `root`)。
 
+DB の見張り (ADR-022 追記、 2026-10-16): 接続は 1 本を共有し、 `CHRONISTA_HUB_DB_CHECK_SECS`
+(default 10) ごとに点検する。 remote で問い合わせが通らなければ接続を作り直す。 DB に届かない要求は
+503 (`Retry-After: 5`) で、 見張りをすぐ起こす。 `/health` は `db` に最後の点検結果を返し、 DB に
+届かなければ 503 / `status: degraded`。
+
 ## Auth (ADR-002/010)
 
 - **user-jwt**: Creo ID (OIDC) 発行を **JWKS で RS256 + iss + aud(list) + exp** 実検証 (`sub`→`usr_id`)。

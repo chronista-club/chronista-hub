@@ -43,6 +43,9 @@ pub async fn start(State(st): State<AppState>, Query(q): Query<StartQuery>) -> R
         ),
         Err(e) => {
             tracing::error!(error = %e, "start: app roster unavailable");
+            if crate::db::is_unavailable(&e) {
+                st.storage.db().kick();
+            }
             html(
                 StatusCode::SERVICE_UNAVAILABLE,
                 &page(

@@ -100,6 +100,7 @@ impl ProductTokenStore {
 
         let rows: Vec<serde_json::Value> = self
             .db
+            .conn()
             .query(format!(
                 "CREATE type::record('hub_product_token', $hash) CONTENT {{
                     token_hash: $hash,
@@ -148,6 +149,7 @@ impl ProductTokenStore {
         }
         let rows: Vec<serde_json::Value> = self
             .db
+            .conn()
             .query(
                 "SELECT app_id, scopes FROM hub_product_token
                  WHERE token_hash = $hash AND revoked_at IS NONE AND expires_at > time::now()
@@ -209,6 +211,7 @@ impl ProductTokenStore {
         );
         let mut response = self
             .db
+            .conn()
             .query(sql)
             .bind(("app_id", app_id.to_string()))
             .bind(("scopes", scopes.to_vec()))
@@ -249,6 +252,7 @@ impl ProductTokenStore {
     pub async fn revoke(&self, app_id: &str, token_id: &str) -> anyhow::Result<bool> {
         let rows: Vec<serde_json::Value> = self
             .db
+            .conn()
             .query(
                 "UPDATE hub_product_token SET revoked_at = time::now()
                  WHERE token_hash = $id AND app_id = $app_id AND revoked_at IS NONE
@@ -265,6 +269,7 @@ impl ProductTokenStore {
     pub async fn list(&self, app_id: &str) -> anyhow::Result<Vec<TokenMeta>> {
         let rows: Vec<serde_json::Value> = self
             .db
+            .conn()
             .query(
                 "SELECT token_hash AS token_id, app_id, scopes, note,
                         <string> created_at AS created_at,
