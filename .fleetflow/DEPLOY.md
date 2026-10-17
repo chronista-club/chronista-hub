@@ -137,7 +137,7 @@ tailnet 依存は外した。federation の direct data-path は **IPv6 GUA**（
 # firewall (fleet-worker-01): UDP 12879 (Unison) + TCP 80/443 (Caddy)
 #   例(ufw): sudo ufw allow 12879/udp ; sudo ufw allow 80,443/tcp
 # 到達 smoke:
-nc -uvz hub.chronista.club 12879 ; curl -fsS https://hub.chronista.club/health
+nc -uvz hub.chronista.club 12879 ; curl -fsS https://hub.chronista.club/health/deep   # DB まで (ADR-022 追記)
 ```
 
 ### （将来 option）hub 自身を IPv6 GUA 化する場合（Sakura router+switch / Fly.io）

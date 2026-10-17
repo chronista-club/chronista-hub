@@ -124,11 +124,12 @@ mako「この辺しっかり整えていこう。リファクタリングも視�
 
 1. **接続は 1 本を共有する**: `db::Db` は `Arc` で 1 本の接続を持つ型。clone しても SDK のセッションは増えない。呼び出し側は `db.conn()`（`Arc<Surreal<Any>>`）で問い合わせる。壊れるときは全部一緒に壊れ、見張りが必ず気づける
 2. **見張り**: `Db::check` が `INFO FOR DB`（認証と ns / db の選択が生きていないと通らない、5 秒で timeout）を問い合わせ、失敗したら remote のときだけ接続を作り直してもう一度問い合わせる。作り直しは同時に 1 回にまとめる。`Db::spawn_watchdog` が `CHRONISTA_HUB_DB_CHECK_SECS`（既定 10 秒）ごとに点検する。embedded（mem / rocksdb）は作り直さない（mem は開き直すと空になる）
-3. **要求の失敗からすぐ点検**: SDK の「届かない・セッションが壊れた」類のエラー（`db::is_unavailable`、文言で分ける）は 503 + `Retry-After: 5` + `{"error":"database unavailable"}`。この応答のあと middleware が `Db::kick` で見張りを起こす。`/start` と consumer も同じ類の失敗で kick する
-4. **要求の時間に上限**: DB が落ちている間、SDK はつなぎ直すまで問い合わせを抱えて待たせる（手元で確認）。上限が無いと要求が返事をしないまま積み上がるので、middleware で 15 秒を上限にし、超えたら 503 + `{"error":"timed out"}` で打ち切って見張りを起こす
-5. **外から見える**: `/health` は見張りの最後の点検結果を `db`（`ok` / `checkedAt` / `lastError` / `lastErrorAt` / `reconnects`）として返し、DB に届かなければ **503 / `status: degraded`**。要求ごとには DB に問い合わせない
+3. **要求の失敗からすぐ点検**: DB に届かない・セッションが壊れた類のエラー（`db::is_unavailable`）は 503 + `Retry-After: 5` + `{"error":"database unavailable"}`。この応答のあと middleware が `Db::kick` で見張りを起こす。`/start`、consumer、Unison の handler（相手には `database unavailable` だけを返す）も同じ類の失敗で kick する。product token の確認で DB に届かないときも 401 ではなく 503（`AuthError::Unavailable`。アプリが token の失効と誤解しないように）
+   - 分類はまず SDK の型（`surrealdb::Error` の `is_connection()`、`NotFoundError::Session`、`AuthError::SessionExpired` / `TokenExpired`）、型が落ちたものは SDK 3.1.4 / core 3.2.4 に実在する文言で分ける（`Session not found`、`The session has expired`、`Anonymous access not allowed`、`Failed to send command`、`Connection uninitialised`、接続の拒否・切断）。作り直しはこの分類に依らない（点検の失敗なら何でも作り直す）ので、取りこぼしても回復が定期点検まで遅れるだけ
+4. **要求の時間に上限**: DB が落ちている間、SDK はつなぎ直すまで問い合わせを抱えて待たせる（手元で確認）。上限が無いと要求が返事をしないまま積み上がるので、middleware で 15 秒を上限にして見張りを起こす。読むだけの要求（GET / HEAD）は 503 + `Retry-After`。書く要求は **504 で `Retry-After` を付けない**: SDK は抱えた問い合わせを DB が戻ったときに流すので、打ち切っても書き込みが後から成立しうる（結果は不明）。Hub の書き込みは一意 index と冪等な UPSERT で守られているので、やり直しても二重にはならない
+5. **外から見える（ADR-014 の shallow / deep）**: `/health` は浅い確認のまま（プロセスが応答できれば 200）で、`db` に見張りの最後の点検結果を載せる。**`/health/deep` を実装**し、DB に届かなければ 503 / `status: degraded`。どちらも要求ごとには DB に問い合わせない。`db.lastError` は壊れ方の分類（`connection` / `session` / `auth` / `timeout` / `error`）だけで、SDK の生の文言は log にだけ出す
 
-テスト: `db` の単体（clone は接続を共有する、embedded は作り直さない、エラーの分類）、`/health` と AppError、実 SurrealDB を使う `tests/db_resilience.rs`（`CHRONISTA_HUB_SURREAL_TEST_URL` で gate。認証を外して壊した接続を点検が作り直す、同時の点検で作り直しは 1 回、kick で見張りが起きる）。
+テスト: `db` の単体（clone は接続を共有する、embedded は作り直さない、エラーの分類を SDK の型と実在の文言で）、`/health` / `/health/deep` と AppError、実 SurrealDB を使う `tests/db_resilience.rs`（`CHRONISTA_HUB_SURREAL_TEST_URL` で gate。認証を外して壊した接続を点検が作り直す、同時の点検で作り直しは 1 回、kick で見張りが起きる）。
 
 **残り**: SurrealDB server と SDK を一緒に 3.3 系へ上げる（fleetstage の storage と相談）。
 

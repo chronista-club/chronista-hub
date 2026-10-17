@@ -63,7 +63,8 @@ pub struct DbHealth {
     pub ok: bool,
     /// 最後に点検した時刻 (unix ms)。 点検前は None
     pub checked_at: Option<i64>,
-    /// 最後に失敗したときのエラー (回復しても残す。 いつ何があったかを追うため)
+    /// 最後に失敗したときの壊れ方 (`connection` / `session` / `auth` / `timeout` / `error`)。
+    /// 回復しても残す。 生の文言は log にだけ出す (外に DB の中身を見せない)
     pub last_error: Option<String>,
     pub last_error_at: Option<i64>,
     /// 起動してから接続を作り直した回数
@@ -266,7 +267,7 @@ impl Db {
             }
             Err(e) => {
                 h.ok = false;
-                h.last_error = Some(e.to_string());
+                h.last_error = Some(kind_of(&e).unwrap_or("error").to_string());
                 h.last_error_at = h.checked_at;
                 if was_ok {
                     tracing::error!(error = %e, "db: unavailable");
@@ -301,29 +302,57 @@ impl Db {
 }
 
 /// DB に届かない・セッションが壊れている類のエラーか (要求を 503 にし、 見張りを起こす)。
-/// SDK のエラーは型ではなく文言で分ける (3.x の ws engine と core の文言、 2026-10 時点)
+///
+/// まず SDK の型 (`surrealdb::Error`) で分ける: 接続のエラー、 セッションが無い、 セッション /
+/// token の期限切れ。 型が落ちた (文字列に包まれた) エラーは文言で分ける (SDK 3.1.4 / core 3.2.4
+/// に実在する文言、 2026-10-18 に確認)。 作り直しそのものはこの分類に依らない
+/// ([`Db::check`] は点検の失敗なら何でも作り直す)。 ここで取りこぼしても、 回復が定期点検まで
+/// 遅れるだけ
 pub fn is_unavailable(err: &anyhow::Error) -> bool {
-    const MARKERS: &[&str] = &[
-        "Session not found",
-        "Session expired",
-        "connection was closed",
-        "Connection closed",
-        "connection closed",
-        "Connection refused",
-        "connection refused",
-        "Connection reset",
-        "connection reset",
-        "db ping timed out",
-        "db reconnect timed out",
-        "Failed to reconnect",
-        "WebSocket",
+    kind_of(err).is_some()
+}
+
+/// 壊れ方の分類 (`/health` に出す短い語。 SDK の生の文言は log にだけ出す)
+fn kind_of(err: &anyhow::Error) -> Option<&'static str> {
+    use surrealdb::types::{AuthError, NotAllowedError, NotFoundError};
+    for e in err.chain() {
+        if let Some(se) = e.downcast_ref::<surrealdb::Error>() {
+            if se.is_connection() {
+                return Some("connection");
+            }
+            if matches!(se.not_found_details(), Some(NotFoundError::Session { .. })) {
+                return Some("session");
+            }
+            if matches!(
+                se.not_allowed_details(),
+                Some(NotAllowedError::Auth(
+                    AuthError::SessionExpired | AuthError::TokenExpired
+                ))
+            ) {
+                return Some("auth");
+            }
+        }
+    }
+    const MARKERS: &[(&str, &str)] = &[
+        ("Session not found", "session"),
+        ("The session has expired", "auth"),
         // Hub は必ずサービス用の利用者で signin している。 匿名扱いになったら、
-        // セッションが認証を失った (期限切れなど) = 接続が壊れている
-        "Anonymous access not allowed",
+        // セッションが認証を失った = 接続が壊れている
+        ("Anonymous access not allowed", "auth"),
+        ("Failed to send command", "connection"),
+        ("Connection uninitialised", "connection"),
+        ("connection was closed", "connection"),
+        ("Connection refused", "connection"),
+        ("Connection reset", "connection"),
+        ("db ping timed out", "timeout"),
+        ("db reconnect timed out", "timeout"),
     ];
-    err.chain()
-        .map(|e| e.to_string())
-        .any(|m| MARKERS.iter().any(|k| m.contains(k)))
+    err.chain().map(|e| e.to_string()).find_map(|m| {
+        MARKERS
+            .iter()
+            .find(|(k, _)| m.contains(k))
+            .map(|(_, kind)| *kind)
+    })
 }
 
 /// 未適用 migration を順次適用し、 適用した名前を返す。
@@ -387,22 +416,59 @@ mod tests {
 
     #[test]
     fn unavailable_errors_are_told_apart_from_query_errors() {
-        for m in [
-            "Session not found: 47a7bd1b-dbd6-4a7f-bc2c-5f258570c2da",
-            "There was an error processing a remote WS request: IO error: Connection reset by peer",
-            "The connection was closed",
-            "db ping timed out after 5s",
-            "Anonymous access not allowed: Not enough permissions to perform this action",
-        ] {
-            assert!(is_unavailable(&anyhow::anyhow!(m.to_string())), "{m}");
+        use surrealdb::types::{AuthError, ConnectionError, NotAllowedError, NotFoundError};
+        // SDK の型で分かるもの
+        let typed: Vec<(anyhow::Error, &str)> = vec![
+            (
+                surrealdb::Error::not_found(
+                    "Session not found: 47a7bd1b".into(),
+                    NotFoundError::Session { id: None },
+                )
+                .into(),
+                "session",
+            ),
+            (
+                surrealdb::Error::connection("IO error".into(), ConnectionError::ConnectionFailed)
+                    .into(),
+                "connection",
+            ),
+            (
+                surrealdb::Error::not_allowed(
+                    "The session has expired".into(),
+                    NotAllowedError::Auth(AuthError::SessionExpired),
+                )
+                .into(),
+                "auth",
+            ),
+        ];
+        for (e, kind) in typed {
+            assert_eq!(kind_of(&e), Some(kind), "{e}");
+            assert!(is_unavailable(&e.context("list_active_apps")));
         }
-        // context で包まれていても中を見る
-        let wrapped = anyhow::anyhow!("Session not found: x").context("list_active_apps");
-        assert!(is_unavailable(&wrapped));
+        // 文字列に包まれたもの (SDK 3.1.4 / core 3.2.4 の実在の文言)
+        for (m, kind) in [
+            (
+                "Session not found: 47a7bd1b-dbd6-4a7f-bc2c-5f258570c2da",
+                "session",
+            ),
+            ("The session has expired", "auth"),
+            (
+                "Anonymous access not allowed: Not enough permissions to perform this action",
+                "auth",
+            ),
+            ("Failed to send command: channel closed", "connection"),
+            ("Connection uninitialised", "connection"),
+            ("IO error: Connection refused (os error 61)", "connection"),
+            ("db ping timed out after 5s", "timeout"),
+        ] {
+            assert_eq!(kind_of(&anyhow::anyhow!(m.to_string())), Some(kind), "{m}");
+        }
+        // DB には届いている (問い合わせ自体の失敗)。 値に紛れた語でも反応しない
         for m in [
             "Database index `user_handle_idx` already contains 'mito'",
             "Parse error: Unexpected token",
             "IAM error: Not enough permissions to perform this action",
+            "Found 'WebSocket' for field `url`, but field must conform to: string::starts_with($value, 'https://')",
         ] {
             assert!(!is_unavailable(&anyhow::anyhow!(m.to_string())), "{m}");
         }

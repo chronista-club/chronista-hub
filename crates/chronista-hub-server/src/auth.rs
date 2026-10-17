@@ -41,7 +41,12 @@ pub enum PrincipalKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthError {
     Unauthorized,
-    InsufficientScope { missing: Vec<String> },
+    InsufficientScope {
+        missing: Vec<String>,
+    },
+    /// product token を確かめる DB に届かなかった (ADR-022 追記)。 拒否はするが 401 ではなく
+    /// 503 にする (アプリが自分の token が無効になったと誤解しないように)
+    Unavailable,
 }
 
 pub trait Verifier: Send + Sync {
@@ -266,13 +271,20 @@ pub async fn authenticate(
     if accept.contains(&PrincipalKind::App)
         && let Some(tok) = app_token
     {
-        // ① Hub 発行 product-token (DB lookup)。 store エラーは「不一致」として扱い
-        //    fallback へ (DB 障害で auth 経路が 500 にならないよう保守的に拒否側へ倒す)。
+        // ① Hub 発行 product-token (DB lookup)。 DB に届かなければ Unavailable (503、 拒否のまま)。
+        //    それ以外の store エラーは「不一致」として扱い fallback へ (保守的に拒否側へ倒す)。
         let mut p = match product_tokens {
-            Some(store) => store.verify(tok).await.unwrap_or_else(|err| {
-                tracing::error!(error = %err, "product-token verify failed (treating as no-match)");
-                None
-            }),
+            Some(store) => match store.verify(tok).await {
+                Ok(p) => p,
+                Err(err) if crate::db::is_unavailable(&err) => {
+                    tracing::error!(error = %err, "product-token verify: database unavailable");
+                    return Err(AuthError::Unavailable);
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "product-token verify failed (treating as no-match)");
+                    None
+                }
+            },
             None => None,
         };
         // ② interim 無署名 stub app-token (env opt-in 時のみ verifier が受理)

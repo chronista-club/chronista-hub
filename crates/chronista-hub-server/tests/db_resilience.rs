@@ -24,6 +24,21 @@ use chronista_hub_server::db::{Db, connect, is_unavailable};
 /// 同じ server に並列で ns / db を作ると write conflict になるので直列にする
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// テストの DB 名 (後始末で消す)
+fn dbname(label: &str) -> String {
+    format!("resilience_{label}_{}", std::process::id())
+}
+
+/// 使った DB を消す (db_connect と同じく、 使い捨ての server にも残さない)
+async fn cleanup(db: &Db, label: &str) {
+    db.conn()
+        .query(format!("REMOVE DATABASE IF EXISTS {}", dbname(label)))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+}
+
 async fn remote(label: &str) -> Option<Db> {
     let url = std::env::var("CHRONISTA_HUB_SURREAL_TEST_URL").ok()?;
     let auth = DbAuth {
@@ -31,9 +46,8 @@ async fn remote(label: &str) -> Option<Db> {
         username: std::env::var("CHRONISTA_HUB_SURREAL_TEST_USERNAME").unwrap_or("root".into()),
         password: std::env::var("CHRONISTA_HUB_SURREAL_TEST_PASSWORD").unwrap_or("root".into()),
     };
-    let dbname = format!("resilience_{label}_{}", std::process::id());
     Some(
-        connect(&url, Some(&auth), "chronista_test", &dbname)
+        connect(&url, Some(&auth), "chronista_test", &dbname(label))
             .await
             .unwrap(),
     )
@@ -78,6 +92,7 @@ async fn a_broken_session_is_replaced_by_a_fresh_connection() {
     let h = db.check().await;
     assert!(h.ok);
     assert_eq!(h.reconnects, 1);
+    cleanup(&db, "replace").await;
 }
 
 #[tokio::test]
@@ -91,6 +106,7 @@ async fn concurrent_checks_reconnect_once() {
     let (a, b, c) = tokio::join!(db.check(), db.check(), db.check());
     assert!(a.ok && b.ok && c.ok, "{a:?} {b:?} {c:?}");
     assert_eq!(db.health().reconnects, 1, "one reconnect for one breakage");
+    cleanup(&db, "concurrent").await;
 }
 
 #[tokio::test]
@@ -113,4 +129,5 @@ async fn a_kick_wakes_the_watchdog() {
     assert_eq!(db.health().reconnects, 1, "{:?}", db.health());
     db.ping().await.unwrap();
     watchdog.abort();
+    cleanup(&db, "kick").await;
 }
