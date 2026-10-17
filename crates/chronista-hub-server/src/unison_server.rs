@@ -165,7 +165,15 @@ pub async fn spawn_unison(
                                     &live_nodes,
                                 )
                                 .await
-                                .unwrap_or_else(|e| json!({ "error": e.to_string() }));
+                                .unwrap_or_else(|e| {
+                                    // DB に届かない類なら見張りを起こす (ADR-022 追記)。
+                                    // 相手には DB の中身の文言を出さない
+                                    if crate::db::is_unavailable(&e) {
+                                        storage.db().kick();
+                                        return json!({ "error": "database unavailable" });
+                                    }
+                                    json!({ "error": e.to_string() })
+                                });
                                 // relay registry を Register/Unregister に追従 (node_id → ctx)。
                                 sync_relay_registry(
                                     &relay_registry,

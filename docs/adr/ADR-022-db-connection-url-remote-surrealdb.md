@@ -125,7 +125,8 @@ mako「この辺しっかり整えていこう。リファクタリングも視�
 1. **接続は 1 本を共有する**: `db::Db` は `Arc` で 1 本の接続を持つ型。clone しても SDK のセッションは増えない。呼び出し側は `db.conn()`（`Arc<Surreal<Any>>`）で問い合わせる。壊れるときは全部一緒に壊れ、見張りが必ず気づける
 2. **見張り**: `Db::check` が `INFO FOR DB`（認証と ns / db の選択が生きていないと通らない、5 秒で timeout）を問い合わせ、失敗したら remote のときだけ接続を作り直してもう一度問い合わせる。作り直しは同時に 1 回にまとめる。`Db::spawn_watchdog` が `CHRONISTA_HUB_DB_CHECK_SECS`（既定 10 秒）ごとに点検する。embedded（mem / rocksdb）は作り直さない（mem は開き直すと空になる）
 3. **要求の失敗からすぐ点検**: SDK の「届かない・セッションが壊れた」類のエラー（`db::is_unavailable`、文言で分ける）は 503 + `Retry-After: 5` + `{"error":"database unavailable"}`。この応答のあと middleware が `Db::kick` で見張りを起こす。`/start` と consumer も同じ類の失敗で kick する
-4. **外から見える**: `/health` は見張りの最後の点検結果を `db`（`ok` / `checkedAt` / `lastError` / `lastErrorAt` / `reconnects`）として返し、DB に届かなければ **503 / `status: degraded`**。要求ごとには DB に問い合わせない
+4. **要求の時間に上限**: DB が落ちている間、SDK はつなぎ直すまで問い合わせを抱えて待たせる（手元で確認）。上限が無いと要求が返事をしないまま積み上がるので、middleware で 15 秒を上限にし、超えたら 503 + `{"error":"timed out"}` で打ち切って見張りを起こす
+5. **外から見える**: `/health` は見張りの最後の点検結果を `db`（`ok` / `checkedAt` / `lastError` / `lastErrorAt` / `reconnects`）として返し、DB に届かなければ **503 / `status: degraded`**。要求ごとには DB に問い合わせない
 
 テスト: `db` の単体（clone は接続を共有する、embedded は作り直さない、エラーの分類）、`/health` と AppError、実 SurrealDB を使う `tests/db_resilience.rs`（`CHRONISTA_HUB_SURREAL_TEST_URL` で gate。認証を外して壊した接続を点検が作り直す、同時の点検で作り直しは 1 回、kick で見張りが起きる）。
 

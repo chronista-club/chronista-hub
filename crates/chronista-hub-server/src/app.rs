@@ -67,17 +67,41 @@ impl IntoResponse for AppError {
     }
 }
 
-/// DB に届かなかった応答のあと、 見張りにすぐ点検させる (定期の点検を待たない)。
-async fn kick_db_watchdog(
+/// 要求の時間の上限。 DB が落ちている間、 SDK はつなぎ直すまで問い合わせを抱えて待たせるので、
+/// 上限が無いと要求が返事をしないまま積み上がる (2026-10-18 に手元で確認)
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// 要求の見張り役 (ADR-022 追記):
+/// - 上限を超えた要求は 503 で打ち切り、 DB の見張りを起こす
+/// - DB に届かなかった応答 ([`DbUnavailable`]) のあとも、 見張りにすぐ点検させる (定期の点検を待たない)
+async fn guard_db(
     State(st): State<AppState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let resp = next.run(req).await;
-    if resp.extensions().get::<DbUnavailable>().is_some() {
-        st.storage.db().kick();
+    match tokio::time::timeout(REQUEST_TIMEOUT, next.run(req)).await {
+        Ok(resp) => {
+            if resp.extensions().get::<DbUnavailable>().is_some() {
+                st.storage.db().kick();
+            }
+            resp
+        }
+        Err(_) => {
+            tracing::error!(
+                timeout_secs = REQUEST_TIMEOUT.as_secs(),
+                "request timed out (database unreachable?)"
+            );
+            st.storage.db().kick();
+            let mut resp = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::RETRY_AFTER, "5")],
+                Json(json!({ "error": "timed out" })),
+            )
+                .into_response();
+            resp.extensions_mut().insert(DbUnavailable);
+            resp
+        }
     }
-    resp
 }
 
 impl<E: Into<anyhow::Error>> From<E> for AppError {
@@ -127,7 +151,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/{at}/{slug}/", get(crate::profile::publication_slash))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            kick_db_watchdog,
+            guard_db,
         ))
         .with_state(state)
 }

@@ -10,18 +10,28 @@
 //! ```
 //!
 //! ⚠️ 使い捨てのローカル server 専用 (共有 instance の root で流さない)。
+//!
+//! 壊し方: SDK の `invalidate()` でセッションの認証を外す。 2026-10-15 は「セッションが無い」、
+//! ここは「セッションの認証が無い」で、 どちらも「今の接続では何も通らない」同じ壊れ方。
+//! SurrealQL の `INVALIDATE` 文では外れない (2026-10-18 に確認)。
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use chronista_hub_server::config::{DbAuth, DbAuthLevel};
-use chronista_hub_server::db::{Db, connect};
+use chronista_hub_server::db::{Db, connect, is_unavailable};
 
-async fn remote() -> Option<Db> {
+/// 同じ server に並列で ns / db を作ると write conflict になるので直列にする
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn remote(label: &str) -> Option<Db> {
     let url = std::env::var("CHRONISTA_HUB_SURREAL_TEST_URL").ok()?;
     let auth = DbAuth {
         level: DbAuthLevel::Root,
         username: std::env::var("CHRONISTA_HUB_SURREAL_TEST_USERNAME").unwrap_or("root".into()),
         password: std::env::var("CHRONISTA_HUB_SURREAL_TEST_PASSWORD").unwrap_or("root".into()),
     };
-    let dbname = format!("resilience_{}", std::process::id());
+    let dbname = format!("resilience_{label}_{}", std::process::id());
     Some(
         connect(&url, Some(&auth), "chronista_test", &dbname)
             .await
@@ -29,11 +39,14 @@ async fn remote() -> Option<Db> {
     )
 }
 
-/// セッションが使えなくなった (認証が外れた) 接続を、 点検が作り直して戻す。
-/// 2026-10-15 は「セッションが無い」で、 ここでは「セッションの認証が無い」で同じ壊れ方を作る
+async fn break_the_session(db: &Db) {
+    db.conn().invalidate().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_broken_session_is_replaced_by_a_fresh_connection() {
-    let Some(db) = remote().await else {
+    let _serial = SERIAL.lock().await;
+    let Some(db) = remote("replace").await else {
         eprintln!("skip: CHRONISTA_HUB_SURREAL_TEST_URL unset");
         return;
     };
@@ -41,16 +54,14 @@ async fn a_broken_session_is_replaced_by_a_fresh_connection() {
     db.ping().await.expect("a fresh connection answers");
     let before = db.conn();
 
-    // 共有の接続を壊す
-    db.conn()
-        .query("INVALIDATE")
+    break_the_session(&db).await;
+    let err = db
+        .ping()
         .await
-        .unwrap()
-        .check()
-        .unwrap();
+        .expect_err("the broken session must fail the ping");
     assert!(
-        db.ping().await.is_err(),
-        "the broken session must fail the ping"
+        is_unavailable(&err),
+        "a session without auth is a broken connection for the Hub: {err}"
     );
 
     let h = db.check().await;
@@ -58,7 +69,7 @@ async fn a_broken_session_is_replaced_by_a_fresh_connection() {
     assert_eq!(h.reconnects, 1);
     assert_eq!(db.generation(), 1);
     assert!(
-        !std::sync::Arc::ptr_eq(&before, &db.conn()),
+        !Arc::ptr_eq(&before, &db.conn()),
         "a new connection replaced the old one"
     );
     db.ping().await.expect("the new connection answers");
@@ -69,45 +80,37 @@ async fn a_broken_session_is_replaced_by_a_fresh_connection() {
     assert_eq!(h.reconnects, 1);
 }
 
-/// 同時に点検しても、 作り直しは 1 回にまとまる。
 #[tokio::test]
 async fn concurrent_checks_reconnect_once() {
-    let Some(db) = remote().await else {
+    let _serial = SERIAL.lock().await;
+    let Some(db) = remote("concurrent").await else {
         eprintln!("skip: CHRONISTA_HUB_SURREAL_TEST_URL unset");
         return;
     };
-    db.conn()
-        .query("INVALIDATE")
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
+    break_the_session(&db).await;
     let (a, b, c) = tokio::join!(db.check(), db.check(), db.check());
     assert!(a.ok && b.ok && c.ok, "{a:?} {b:?} {c:?}");
     assert_eq!(db.health().reconnects, 1, "one reconnect for one breakage");
 }
 
-/// kick で見張りがすぐ点検する (定期の間隔を待たない)。
 #[tokio::test]
 async fn a_kick_wakes_the_watchdog() {
-    let Some(db) = remote().await else {
+    let _serial = SERIAL.lock().await;
+    let Some(db) = remote("kick").await else {
         eprintln!("skip: CHRONISTA_HUB_SURREAL_TEST_URL unset");
         return;
     };
-    let _w = db.spawn_watchdog(std::time::Duration::from_secs(3600));
-    db.conn()
-        .query("INVALIDATE")
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
+    // 定期の点検は 1 時間後。 kick だけが点検を起こす
+    let watchdog = db.spawn_watchdog(Duration::from_secs(3600));
+    break_the_session(&db).await;
     db.kick();
-    for _ in 0..50 {
+    for _ in 0..100 {
         if db.health().reconnects == 1 && db.health().ok {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(db.health().reconnects, 1, "{:?}", db.health());
     db.ping().await.unwrap();
+    watchdog.abort();
 }

@@ -317,6 +317,9 @@ pub fn is_unavailable(err: &anyhow::Error) -> bool {
         "db reconnect timed out",
         "Failed to reconnect",
         "WebSocket",
+        // Hub は必ずサービス用の利用者で signin している。 匿名扱いになったら、
+        // セッションが認証を失った (期限切れなど) = 接続が壊れている
+        "Anonymous access not allowed",
     ];
     err.chain()
         .map(|e| e.to_string())
@@ -389,6 +392,7 @@ mod tests {
             "There was an error processing a remote WS request: IO error: Connection reset by peer",
             "The connection was closed",
             "db ping timed out after 5s",
+            "Anonymous access not allowed: Not enough permissions to perform this action",
         ] {
             assert!(is_unavailable(&anyhow::anyhow!(m.to_string())), "{m}");
         }
