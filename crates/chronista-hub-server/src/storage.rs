@@ -149,6 +149,11 @@ impl Storage {
         Self { db }
     }
 
+    /// DB の入口 (見張りへの kick と /health に使う)
+    pub fn db(&self) -> &Db {
+        &self.db
+    }
+
     pub async fn get_resources_by_handle(
         &self,
         handle: &str,
@@ -163,6 +168,7 @@ impl Storage {
         add_filter_binds(&mut binds, options);
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query(sql)
             .bind(Value::Object(binds))
             .await?
@@ -191,6 +197,7 @@ impl Storage {
         add_filter_binds(&mut binds, options);
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query(sql)
             .bind(Value::Object(binds))
             .await?
@@ -203,6 +210,7 @@ impl Storage {
         let sql = format!("SELECT * FROM hub_resource WHERE rid = $id{VP_NODE_REST_GUARD} LIMIT 1");
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query(sql)
             .bind(("id", id.to_string()))
             .await?
@@ -214,6 +222,7 @@ impl Storage {
         // manifest の取得 (well-known) は ADR-009 の段階 2。 今は名簿 (`app` table) から組む。
         let row: Option<Value> = self
             .db
+            .conn()
             .query("SELECT * OMIT id FROM ONLY type::record('app', $id)")
             .bind(("id", app_id.to_string()))
             .await?
@@ -245,6 +254,7 @@ impl Storage {
     pub async fn list_active_apps(&self) -> anyhow::Result<Vec<AppEntry>> {
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query("SELECT * OMIT id FROM app WHERE status = 'active' ORDER BY app_id")
             .await?
             .take(0)?;
@@ -262,6 +272,7 @@ impl Storage {
     pub async fn put_app(&self, entry: &AppEntry) -> anyhow::Result<()> {
         let existing: Option<Value> = self
             .db
+            .conn()
             .query("SELECT * OMIT id FROM ONLY type::record('app', $id)")
             .bind(("id", entry.app_id.clone()))
             .await?
@@ -279,6 +290,7 @@ impl Storage {
         };
         content.extend(new);
         self.db
+            .conn()
             .query("UPSERT type::record('app', $id) CONTENT $content")
             .bind(("id", entry.app_id.clone()))
             .bind(("content", Value::Object(content)))
@@ -291,6 +303,7 @@ impl Storage {
     pub async fn get_user_by_sub(&self, sub: &str) -> anyhow::Result<Option<UserEntry>> {
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query("SELECT * OMIT id FROM user WHERE creo_sub = $sub LIMIT 1")
             .bind(("sub", sub.to_string()))
             .await?
@@ -311,6 +324,7 @@ impl Storage {
         let usr_id = new_usr_id();
         let created = self
             .db
+            .conn()
             .query(
                 "CREATE type::record('user', $usr_id) CONTENT {
                     usr_id: $usr_id, creo_sub: $sub, account_type: 'user', locale: 'ja'
@@ -337,6 +351,7 @@ impl Storage {
     pub async fn get_user_by_handle(&self, handle: &str) -> anyhow::Result<Option<UserEntry>> {
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query("SELECT * OMIT id FROM user WHERE handle = $handle LIMIT 1")
             .bind(("handle", handle.to_string()))
             .await?
@@ -373,6 +388,7 @@ impl Storage {
         }
         let updated = self
             .db
+            .conn()
             .query(
                 "UPDATE type::record('user', $usr_id) SET handle = $handle
                  WHERE handle = NONE AND account_type = 'user'",
@@ -400,6 +416,7 @@ impl Storage {
     pub async fn get_reserve(&self, handle: &str) -> anyhow::Result<Option<HandleReserve>> {
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query(
                 "SELECT handle, usr_id, new_handle, <string> expires_at AS expires_at
                  FROM handle_reserve WHERE handle = $handle AND expires_at > time::now() LIMIT 1",
@@ -414,6 +431,7 @@ impl Storage {
     pub async fn get_reserve_of(&self, usr_id: &str) -> anyhow::Result<Option<HandleReserve>> {
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query(
                 "SELECT handle, usr_id, new_handle, <string> expires_at AS expires_at
                  FROM handle_reserve WHERE usr_id = $usr_id AND expires_at > time::now() LIMIT 1",
@@ -473,6 +491,7 @@ impl Storage {
     ) -> anyhow::Result<Option<RenameOutcome>> {
         let until: Vec<String> = self
             .db
+            .conn()
             .query(
                 "SELECT VALUE <string> (handle_changed_at + 30d) FROM user
                  WHERE usr_id = $usr_id AND handle_changed_at != NONE
@@ -493,6 +512,7 @@ impl Storage {
         }
         let mut resp = self
             .db
+            .conn()
             .query(
                 "BEGIN TRANSACTION;
                  LET $u = (UPDATE type::record('user', $usr_id)
@@ -557,6 +577,7 @@ impl Storage {
     pub async fn get_active_app(&self, app_id: &str) -> anyhow::Result<Option<AppEntry>> {
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query("SELECT * OMIT id FROM app WHERE app_id = $id AND status = 'active' LIMIT 1")
             .bind(("id", app_id.to_string()))
             .await?
@@ -575,6 +596,7 @@ impl Storage {
     pub async fn all_app_ids(&self) -> anyhow::Result<Vec<String>> {
         let ids: Vec<String> = self
             .db
+            .conn()
             .query("SELECT VALUE app_id FROM app")
             .await?
             .take(0)?;
@@ -589,6 +611,7 @@ impl Storage {
     ) -> anyhow::Result<Option<String>> {
         let roles: Vec<String> = self
             .db
+            .conn()
             .query(
                 "SELECT VALUE role FROM org_membership
                  WHERE org_user = $org AND member_user = $member LIMIT 1",
@@ -609,6 +632,7 @@ impl Storage {
         role: &str,
     ) -> anyhow::Result<()> {
         self.db
+            .conn()
             .query(
                 "CREATE org_membership CONTENT {
                     org_user: $org, member_user: $member, role: $role
@@ -631,6 +655,7 @@ impl Storage {
         }
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query(
                 // ORDER BY の列は SELECT にも要る (SurrealDB)
                 "SELECT org_user, role, joined_at FROM org_membership
@@ -658,7 +683,7 @@ impl Storage {
         publisher_usr_id: &str,
     ) -> anyhow::Result<Vec<Publication>> {
         let rows: Vec<Value> = self
-            .db
+            .db.conn()
             .query(
                 "SELECT publisher_usr_id, slug, url, title, app_id, <string> updated_at AS updated_at
                  FROM publication WHERE publisher_usr_id = $p ORDER BY slug",
@@ -677,7 +702,7 @@ impl Storage {
         slug: &str,
     ) -> anyhow::Result<Option<Publication>> {
         let rows: Vec<Value> = self
-            .db
+            .db.conn()
             .query(
                 "SELECT publisher_usr_id, slug, url, title, app_id, <string> updated_at AS updated_at
                  FROM publication WHERE publisher_usr_id = $p AND slug = $s LIMIT 1",
@@ -704,6 +729,7 @@ impl Storage {
                 .await?
                 .is_some();
             self.db
+                .conn()
                 .query(
                     "UPSERT type::record('publication', [$p, $s]) SET
                         publisher_usr_id = $p, slug = $s, url = $url, title = $title,
@@ -730,6 +756,7 @@ impl Storage {
     ) -> anyhow::Result<bool> {
         let gone: Vec<Value> = self
             .db
+            .conn()
             .query("DELETE type::record('publication', [$p, $s]) RETURN BEFORE")
             .bind(("p", publisher_usr_id.to_string()))
             .bind(("s", slug.to_string()))
@@ -742,6 +769,7 @@ impl Storage {
     pub async fn get_user_by_id(&self, usr_id: &str) -> anyhow::Result<Option<UserEntry>> {
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query("SELECT * OMIT id FROM user WHERE usr_id = $usr_id LIMIT 1")
             .bind(("usr_id", usr_id.to_string()))
             .await?
@@ -767,6 +795,7 @@ impl Storage {
         display_name: Option<&str>,
     ) -> anyhow::Result<Option<UserEntry>> {
         self.db
+            .conn()
             .query(
                 "UPDATE type::record('user', $usr_id) SET display_name = $display_name
                  WHERE account_type = 'user'",
@@ -781,6 +810,7 @@ impl Storage {
     pub async fn upsert_resource(&self, resource: &Resource) -> anyhow::Result<()> {
         let row = ResourceRow::from_resource(resource);
         self.db
+            .conn()
             .query("UPSERT type::record('hub_resource', $rid) CONTENT $content")
             .bind(("rid", resource.id.clone()))
             .bind(("content", serde_json::to_value(&row)?))
@@ -791,6 +821,7 @@ impl Storage {
 
     pub async fn delete_resource(&self, id: &str) -> anyhow::Result<()> {
         self.db
+            .conn()
             .query("DELETE type::record('hub_resource', $rid)")
             .bind(("rid", id.to_string()))
             .await?
@@ -827,6 +858,7 @@ impl Storage {
         };
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query(
                 "UPSERT type::record('hub_resource', $rid) CONTENT {
                     rid: $rid, type: 'vp-node', path: '/', handle: $handle,
@@ -897,6 +929,7 @@ impl Storage {
         };
         let removed: Vec<Value> = self
             .db
+            .conn()
             .query(sql)
             .bind(("rid", rid))
             .bind(("requester", requester.map(str::to_string)))
@@ -910,6 +943,7 @@ impl Storage {
     pub async fn list_resources_by_type(&self, rtype: &str) -> anyhow::Result<Vec<Resource>> {
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query("SELECT * FROM hub_resource WHERE type = $rtype ORDER BY createdAt")
             .bind(("rtype", rtype.to_string()))
             .await?
@@ -943,6 +977,7 @@ impl Storage {
         };
         let rows: Vec<Value> = self
             .db
+            .conn()
             .query(sql)
             .bind(("viewer", viewer.map(str::to_string)))
             .await?

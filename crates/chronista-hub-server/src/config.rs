@@ -12,6 +12,8 @@ pub struct Config {
     pub db_auth: Option<DbAuth>,
     pub auto_migrate: bool,
     pub migrations_dir: String,
+    /// DB の見張りの間隔 (秒)。 `CHRONISTA_HUB_DB_CHECK_SECS`、 既定 10、 最小 2
+    pub db_check_secs: u64,
     /// Unison (QUIC) surface の listen address (node registry/discovery channel)。
     pub unison_addr: String,
     /// Unison surface の TLS cert source (ADR-020 §S1)。
@@ -165,6 +167,11 @@ impl Config {
             auto_migrate: std::env::var("AUTO_MIGRATE_ENABLED").as_deref() == Ok("true"),
             migrations_dir: std::env::var("MIGRATIONS_DIR")
                 .unwrap_or_else(|_| "./migrations".into()),
+            db_check_secs: std::env::var("CHRONISTA_HUB_DB_CHECK_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(10)
+                .max(2),
             unison_addr: std::env::var("CHRONISTA_HUB_UNISON_ADDR")
                 .unwrap_or_else(|_| "[::1]:7879".into()),
             unison_cert,

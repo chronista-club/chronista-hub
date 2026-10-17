@@ -97,7 +97,8 @@ async fn ws_url_connects_signs_in_and_migrates() {
         "remote DB applies all migrations: {applied:?}"
     );
 
-    db.query(format!("REMOVE DATABASE {dbname}"))
+    db.conn()
+        .query(format!("REMOVE DATABASE {dbname}"))
         .await
         .unwrap()
         .check()
@@ -131,6 +132,7 @@ async fn ws_database_user_applies_later_migrations() {
         .await
         .unwrap();
     admin
+        .conn()
         .query("DEFINE USER OVERWRITE hubsvc ON DATABASE PASSWORD 'pw-test' ROLES OWNER")
         .await
         .unwrap()
@@ -163,6 +165,7 @@ async fn ws_database_user_applies_later_migrations() {
 
     let _ = std::fs::remove_dir_all(&dir);
     admin
+        .conn()
         .query(format!("REMOVE DATABASE {dbname}"))
         .await
         .unwrap()

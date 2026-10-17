@@ -40,6 +40,10 @@ Rate limit defaults:
 
 search backend は creo-memories の前例 (`mem_1CYpxcy1cdkZ76Ezs5Gmho`) を踏襲、 modes: keyword / semantic / **hybrid (default)**。
 
+## 2026-10-18 追記 — `/health/deep` を実装（ADR-022 追記）
+
+2026-10-15 の障害（DB を使う要求が全部失敗）で、浅い `/health` だけでは DB の死が見えなかった。`GET /health/deep` を実装した。DB は Hub の見張り（10 秒ごとの点検）の最後の結果で判断し、届かなければ 503 / `status: degraded`。`/health` は本 ADR どおり浅いまま（200）で、`db` に同じ点検結果を載せる。監視と人の確認は `/health/deep` を見る。
+
 ## Consequences
 
 ### 正

@@ -78,6 +78,7 @@ async fn migrations_seed_reserved_handles() {
     );
 
     let count: Vec<i64> = db
+        .conn()
         .query("SELECT VALUE count() FROM user WHERE account_type = 'reserved' GROUP ALL")
         .await
         .unwrap()

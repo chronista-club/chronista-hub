@@ -30,6 +30,9 @@ pub async fn tick(log: &EventLog, storage: &Storage, batch: usize) -> (usize, us
         Ok(p) => p,
         Err(err) => {
             tracing::error!(error = %err, "consumer: unprocessed poll failed");
+            if crate::db::is_unavailable(&err) {
+                storage.db().kick();
+            }
             return (0, 1);
         }
     };
