@@ -21,7 +21,10 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-surrealdb = { version = "3.0", features = ["kv-rocksdb", "kv-mem"] }
+# 3.3: live の SurrealDB server (fleetstage-surreal-live) が 2026-10-16 に 3.3.4 になったので揃える。
+#      3.3 の ws engine は replay の完了まで要求を待たせ、期限切れ token の replay をやり直す
+#      (2026-10-15 の Session not found 障害の疑わしい箇所、ADR-022 追記)
+surrealdb = { version = "3.3", features = ["kv-rocksdb", "kv-mem"] }
 # JWT 検証 (RS256、 内部で ring を使う — TLS の aws-lc-rs とは別用途で競合しない)
 jsonwebtoken = "9"
 # product-token: 乱数生成 + SHA-256 hash (opaque token、 ADR-010 Phase 2)
