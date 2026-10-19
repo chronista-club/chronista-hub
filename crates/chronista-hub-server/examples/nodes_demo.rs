@@ -34,7 +34,7 @@ async fn register(
     endpoints: &[&str],
     cred: Option<&[u8]>,
 ) -> Result<Value> {
-    let client = ProtocolClient::new_default()?;
+    let client = ProtocolClient::insecure_localhost()?;
     connect(&client, addr, cred).await?;
     let ch: UnisonChannel = client.open_channel("nodes").await?;
     let resp: Value = ch
@@ -49,7 +49,7 @@ async fn register(
 }
 
 async fn discover(addr: &str, cred: Option<&[u8]>) -> Result<Vec<Value>> {
-    let client = ProtocolClient::new_default()?;
+    let client = ProtocolClient::insecure_localhost()?;
     connect(&client, addr, cred).await?;
     let ch: UnisonChannel = client.open_channel("nodes").await?;
     let resp: Value = ch.request("Discover", &json!({})).await?;
