@@ -304,8 +304,8 @@ impl Db {
 /// DB に届かない・セッションが壊れている類のエラーか (要求を 503 にし、 見張りを起こす)。
 ///
 /// まず SDK の型 (`surrealdb::Error`) で分ける: 接続のエラー、 セッションが無い、 セッション /
-/// token の期限切れ。 型が落ちた (文字列に包まれた) エラーは文言で分ける (SDK 3.1.4 / core 3.2.4
-/// に実在する文言、 2026-10-18 に確認)。 作り直しそのものはこの分類に依らない
+/// token の期限切れ。 型が落ちた (文字列に包まれた) エラーは文言で分ける (SDK 3.3.4 / core 3.3.4
+/// に実在する文言、 2026-10-21 に確認)。 作り直しそのものはこの分類に依らない
 /// ([`Db::check`] は点検の失敗なら何でも作り直す)。 ここで取りこぼしても、 回復が定期点検まで
 /// 遅れるだけ
 pub fn is_unavailable(err: &anyhow::Error) -> bool {
@@ -445,7 +445,7 @@ mod tests {
             assert_eq!(kind_of(&e), Some(kind), "{e}");
             assert!(is_unavailable(&e.context("list_active_apps")));
         }
-        // 文字列に包まれたもの (SDK 3.1.4 / core 3.2.4 の実在の文言)
+        // 文字列に包まれたもの (SDK 3.3.4 / core 3.3.4 の実在の文言)
         for (m, kind) in [
             (
                 "Session not found: 47a7bd1b-dbd6-4a7f-bc2c-5f258570c2da",
