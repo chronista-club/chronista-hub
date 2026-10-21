@@ -5,7 +5,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.11.1"
+version = "0.11.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
@@ -21,7 +21,10 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-surrealdb = { version = "3.0", features = ["kv-rocksdb", "kv-mem"] }
+# 3.3: live の SurrealDB server (fleetstage-surreal-live) が 2026-10-16 に 3.3.4 になったので揃える。
+#      3.3 の ws engine は replay の完了まで要求を待たせ、期限切れ token の replay をやり直す
+#      (2026-10-15 の Session not found 障害の疑わしい箇所、ADR-022 追記)
+surrealdb = { version = "3.3", features = ["kv-rocksdb", "kv-mem"] }
 # JWT 検証 (RS256、 内部で ring を使う — TLS の aws-lc-rs とは別用途で競合しない)
 jsonwebtoken = "9"
 # product-token: 乱数生成 + SHA-256 hash (opaque token、 ADR-010 Phase 2)
@@ -36,5 +39,19 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # 1.2.0: spawn_listen_with_cert (federation cert gap)、 1.3.0: raw QUIC ALPN "unison"、
 # 1.4.0: connection-level auth primitive (enable_auth、 ADR-020 §S3)、
 # 1.5.0: server-initiated reliable stream (ctx.open_server_stream / register_server_channel、
-#        ServerToClient を起こす — relay = universal floor の土台、 ADR-020 §S4)。
-club-unison = "1.5.0"
+#        ServerToClient を起こす — relay = universal floor の土台、 ADR-020 §S4)、
+# 1.6.0: connect_race (Happy Eyeballs v2 staggered-race dialer、 ADR-020 §S6)、
+# 1.7.0: QUIC accept loop の片肺死 fix — accept 内の handshake await 失敗が loop 全体を
+#        殺していた (hub は常駐 QUIC server なのでこれが効く)、
+# 1.8.0: KDL request の safety hint 属性 (readonly / destructive / idempotent)、
+# 1.9.0: buffa 0.5.2 → 0.9.1 で **受信経路の脆弱性 2 件を解消** (UAF: GHSA-9pwq-gcrx-wghh、
+#        unbounded allocation DoS: CVE-2026-55407)。 全 ProtocolMessage の decode に効く。
+#        buffa 0.5 系に patch 版が無く下流の cargo update では直せないため、 下限を
+#        1.9.0 に固定する (1.5 のままだと脆弱な graph に解決し戻れてしまう)。
+# 2.0.0: 呼び出し元の無い public API の一掃 (major)。 **wire bytes は不変** なので 1.x の
+#        client (VP 等) とそのまま通信できる。 hub 側の移行は listen 系 5 メソッド →
+#        `Arc<ProtocolServer>::listener(addr).cert(..).spawn()` builder と、
+#        `ProtocolClient::new_default` → `insecure_localhost` (examples) のみ。
+# 2.1.0: club-kdl 0.12 → 0.14 (KDL スキーマの読み込みが約 100 倍速い)、 schema-diff / schema-check。
+#        wire bytes は不変 (VP は 2.0.0 のままで通信できる)。 KDL の構文エラーの文言に位置が付く。
+club-unison = "2.1.0"

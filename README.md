@@ -30,7 +30,7 @@ id.creo-memories.in     各 product
 
 ## Status
 
-2026-10-18 時点で live（`hub.chronista.club`、v0.11.1）が実際に担っているのは **VP の node registry と federation（Unison / QUIC）**、Auth0 のやり直し先 `/start`、アプリの名簿の段階 1（管理者が登録し、`/start` と `GET /v1/apps` が読む）、利用者の名簿と handle の claim（`GET /v1/me` で名簿に載り、`PUT /v1/me/handle` で必要になったときに claim、`GET /v1/users/@{handle}` が公開）、その設定画面 `/settings`（Creo ID に PKCE でログインし、handle と呼び名を自分で変える。利用者向けの呼び方は「Creo Apps」。並びは Creo ID の情報が先頭、そのあと変えられる項目。handle は変えられ、旧 handle は 100 日取り置き + 案内、30 日の cooldown）。`/start` は各アプリの公式アイコンを並べ、GFP はいったん閉じている（status = pending）。名義（人と団体、ADR-024）: 会社の名義 `@anycreative` があり、`/@{handle}` が名義のページ、`/@{handle}/{slug}` が読める公開 URL（中身のアプリの公開ページへ案内。登録はアプリが product token で行い、Creo Memories では lab 以上）。
+2026-10-21 時点で live（`hub.chronista.club`、v0.11.2）が実際に担っているのは **VP の node registry と federation（Unison / QUIC）**、Auth0 のやり直し先 `/start`、アプリの名簿の段階 1（管理者が登録し、`/start` と `GET /v1/apps` が読む）、利用者の名簿と handle の claim（`GET /v1/me` で名簿に載り、`PUT /v1/me/handle` で必要になったときに claim、`GET /v1/users/@{handle}` が公開）、その設定画面 `/settings`（Creo ID に PKCE でログインし、handle と呼び名を自分で変える。利用者向けの呼び方は「Creo Apps」。並びは Creo ID の情報が先頭、そのあと変えられる項目。handle は変えられ、旧 handle は 100 日取り置き + 案内、30 日の cooldown）。`/start` は各アプリの公式アイコンを並べ、GFP はいったん閉じている（status = pending）。名義（人と団体、ADR-024）: 会社の名義 `@anycreative` があり、`/@{handle}` が名義のページ、`/@{handle}/{slug}` が読める公開 URL（中身のアプリの公開ページへ案内。登録はアプリが product token で行い、Creo Memories では lab 以上）。
 handle の rename・organization・`/@{handle}` のページ・Creo Memories との同期はまだ無い。
 機能ごとの現状と、Creo ID / Hub / 各アプリの分担は [ADR-023](docs/adr/ADR-023-creo-id-hub-apps-layering.md) を参照。
 

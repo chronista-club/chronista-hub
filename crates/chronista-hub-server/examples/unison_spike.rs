@@ -4,7 +4,7 @@
 //! 本実装 (hub に nodes.* channel を載せる) の前に、 Beta 版 (v1.1.0) の地雷を踏む:
 //!   - edition 2024 / rust 1.95 で hub 側から build できるか
 //!   - rustls provider 衝突 (reqwest=rustls, surrealdb=aws-lc-rs, unison=quinn+ring) が無いか
-//!   - axum と同じ tokio runtime で QUIC server を同居できるか (spawn_listen)
+//!   - axum と同じ tokio runtime で QUIC server を同居できるか (listener(..).spawn())
 //!   - enable_discovery (`unison.discovery`) が hub の文脈で動くか
 //!
 //! 実行: `cargo run -p chronista-hub-server --example unison_spike`
@@ -88,13 +88,16 @@ async fn main() -> Result<()> {
         })
         .await;
 
-    let handle = server.spawn_listen("[::1]:0").await?;
+    let handle = std::sync::Arc::new(server)
+        .listener("[::1]:0")
+        .spawn()
+        .await?;
     let local = handle.local_addr();
     let addr = format!("[{}]:{}", local.ip(), local.port());
     println!("spike server listening on {addr}");
 
     // --- client: discovery round-trip + echo round-trip ---
-    let client = ProtocolClient::new_default()?;
+    let client = ProtocolClient::insecure_localhost()?;
     client.connect(&addr).await?;
 
     // 1) unison.discovery (self-description は enable_discovery だけで動くはず)
