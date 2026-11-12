@@ -4,6 +4,9 @@
 //! ブラウザは Creo ID に PKCE でログインして token を取り、 Hub の `/v1/me` を叩く。
 //! Hub は Auth0 の SPA client を 1 つ持つ (client_id は公開値)。
 
+mod common;
+use common::connect_test;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,7 +15,7 @@ use axum::http::{Request, StatusCode};
 use chronista_hub_server::app::{AppState, build_router};
 use chronista_hub_server::auth::StubVerifier;
 use chronista_hub_server::config::SettingsConfig;
-use chronista_hub_server::db::{connect_mem, run_pending_migrations};
+use chronista_hub_server::db::run_pending_migrations;
 use chronista_hub_server::event_log::EventLog;
 use chronista_hub_server::product_token::ProductTokenStore;
 use chronista_hub_server::storage::Storage;
@@ -20,7 +23,7 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 async fn router(settings: Option<SettingsConfig>) -> axum::Router {
-    let db = connect_mem("chronista", "hub").await.unwrap();
+    let db = connect_test("chronista", "hub").await.unwrap();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
     run_pending_migrations(&db, &dir).await.unwrap();
     build_router(AppState {

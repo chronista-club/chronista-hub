@@ -131,7 +131,50 @@ mako「この辺しっかり整えていこう。リファクタリングも視�
 
 テスト: `db` の単体（clone は接続を共有する、embedded は作り直さない、エラーの分類を SDK の型と実在の文言で）、`/health` / `/health/deep` と AppError、実 SurrealDB を使う `tests/db_resilience.rs`（`CHRONISTA_HUB_SURREAL_TEST_URL` で gate。認証を外して壊した接続を点検が作り直す、同時の点検で作り直しは 1 回、kick で見張りが起きる）。
 
-**残り**: SurrealDB server と SDK を一緒に 3.3 系へ上げる（fleetstage の storage と相談）。
+**当時の残り**: SurrealDB server と SDK を一緒に 3.3 系へ上げる（後に v0.11.2 で SDK 3.3.4 へ更新）。
+
+## 2026-11-12 — SDK 4 対応（配備前）
+
+共有 storage の server 4.0.0 への更新に先立ち、Hub の SDK を 4.0.1 へ更新する。
+SDK 3.3.4 は server 4.0.0 を version range で拒否する。SDK 4.0.1 は、使い捨ての
+server 3.3.4 / 4.0.0 の双方で接続・Root / Database user 認証・migration・接続回復を確認した。
+順序は **Hub client を更新 → 3.3.4 上で live を確認 → 共有 server を切替**。
+この変更の範囲は検証・PR・image までで、live 配備や共有 DB の更新を行うものではない。
+関連タスク: `mem_1CgvWFshJUiNpcgfBmNgMT`。
+
+### embedded と scratch の境界
+
+- SDK 4 の feature は `kv-surrealkv` + `kv-mem`。新規永続 DB は `surrealkv://`、旧
+  `rocksdb://` のどちらも SurrealKV として開く。旧 env / default URL は互換のため維持する。
+- 新規 DB の終了・再オープン後に、値と migration 履歴が残ることを `db_connect` で検証する。
+  既存 RocksDB の `CURRENT` の有無を新エンジンの成功条件にはしない。
+- 3.x の既存 embedded データを開く変換は別作業。Hub から変換オプションを自動で有効化しない。
+  scratch は従来の image のまま維持する。live は remote なので、この SDK 更新時に
+  worker の旧 RocksDB ディレクトリを変換する必要はない。
+- [上流の移行手順](https://surrealdb.com/docs/build/migrating/from-old-surrealdb-versions/3x-to-4x)
+  では 3.x → 4.x のデータ変換は一方通行で、embedded の opt-in は環境変数ではなく
+  datastore option。変換の実測・バックアップなしに旧 scratch へ新 image を適用しない。
+
+### 再現できる検証
+
+`scripts/test-db-compat.sh` は loopback に公開した使い捨て memory DB を起動し、両 server で
+同じ主要 API・接続・回復テストを実行する。既存 API テストの期待値は維持し、接続先だけを
+`tests/common` で切り替える。bootstrap の namespace DDL が競合しないよう直列実行する。
+共有 DB や live の URL を指定して流してはいけない。
+
+SDK 4 の unoptimized embedded テストは libtest の既定スタックで overflow した。
+同じバイナリを 10 MiB で動かすと永続化テストは通る。`.cargo/config.toml` は
+upstream `surrealdb-core` の `tests/it/helpers::with_enough_stack` と同じ debug 用 24 MB を設定する。
+さらに環境変数なしの実プロセスでも、イベント受信後に Tokio worker の overflow を再現した。
+`src/main.rs` で runtime を組み、worker を上流と同じ debug 24 MB / release 10 MB に設定する。
+これにより配布 binary は Cargo の環境変数に依存しない。失敗した `scripts/e2e.sh` で
+実プロセスの再起動・永続化を検証し、image の release binary は別途 smoke を行う。
+
+手元の検証結果 (2026-11-12、macOS arm64):
+- workspace: 106 件成功。うち remote 接続用 5 件は URL 未指定では実行を省略するため、下記で別途実行。
+- 互換性 script: server 3.3.4 / 4.0.0 それぞれ 71 件成功（remote 70 + 新規 embedded 永続化 1）。
+- `scripts/e2e.sh`: worker stack 修正前はイベント受信後に abort、修正後は publish → read → 再起動 → read が成功。
+- fmt / clippy (`-D warnings`) / shellcheck 成功。live データの変換・live 配備は未実施。
 
 ## 却下案
 

@@ -4,6 +4,9 @@
 //! - `PUT /v1/apps/{app_id}`: 管理 (X-Admin-Key)。登録と更新
 //! - `/start` は名簿から一覧を引く (ADR-023 追記)
 
+mod common;
+use common::connect_test;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -11,7 +14,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chronista_hub_server::app::{AppState, build_router};
 use chronista_hub_server::auth::StubVerifier;
-use chronista_hub_server::db::{connect_mem, run_pending_migrations};
+use chronista_hub_server::db::run_pending_migrations;
 use chronista_hub_server::event_log::EventLog;
 use chronista_hub_server::product_token::ProductTokenStore;
 use chronista_hub_server::storage::Storage;
@@ -22,7 +25,7 @@ use tower::ServiceExt;
 const ADMIN_KEY: &str = "test-admin-key";
 
 async fn router_with(admin_key: Option<&str>) -> axum::Router {
-    let db = connect_mem("chronista", "hub").await.unwrap();
+    let db = connect_test("chronista", "hub").await.unwrap();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
     run_pending_migrations(&db, &dir).await.unwrap();
     build_router(AppState {

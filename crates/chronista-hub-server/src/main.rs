@@ -19,8 +19,23 @@ use chronista_hub_server::product_token::ProductTokenStore;
 use chronista_hub_server::storage::Storage;
 use chronista_hub_server::{SERVICE_NAME, VERSION};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // SDK 4 embedded の query 実行は Tokio 既定の 2 MiB では overflow する。
+    // 上流 surrealdb-core の with_enough_stack と同じ debug / release のサイズ。
+    // Cargo の RUST_MIN_STACK に依存せず、配布 binary 自身で worker を設定する。
+    let stack_size = if cfg!(debug_assertions) {
+        24_000_000
+    } else {
+        10_000_000
+    };
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(stack_size)
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),

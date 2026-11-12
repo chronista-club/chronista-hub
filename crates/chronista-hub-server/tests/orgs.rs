@@ -6,6 +6,9 @@
 //!   (プランの判定はアプリ。 Hub は名義と URL の host を確かめる)
 //! - `/@{handle}`: 名義のページ、 `/@{handle}/{slug}`: アプリの公開ページへ 302
 
+mod common;
+use common::connect_test;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -14,7 +17,7 @@ use axum::http::{Request, StatusCode};
 use base64::Engine;
 use chronista_hub_server::app::{AppState, build_router};
 use chronista_hub_server::auth::StubVerifier;
-use chronista_hub_server::db::{Db, connect_mem, run_pending_migrations};
+use chronista_hub_server::db::{Db, run_pending_migrations};
 use chronista_hub_server::event_log::EventLog;
 use chronista_hub_server::product_token::ProductTokenStore;
 use chronista_hub_server::storage::Storage;
@@ -33,7 +36,7 @@ struct Hub {
 }
 
 async fn hub() -> Hub {
-    let db = connect_mem("chronista", "hub").await.unwrap();
+    let db = connect_test("chronista", "hub").await.unwrap();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
     run_pending_migrations(&db, &dir).await.unwrap();
     let r = build_router(AppState {
