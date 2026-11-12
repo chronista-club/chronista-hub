@@ -39,12 +39,12 @@ Phase 1-5（AC-18: Memories hub-sync）は未着手。
 
 ## Server (Rust)
 
-Hub server は **Rust + axum + embedded SurrealDB (kv-rocksdb)** で実装 (ADR-016、 低レイテンシ重視)。
+Hub server は **Rust + axum + SurrealDB SDK 4** で実装。live は remote DB、手元の新規 embedded DB は SurrealKV (ADR-022)。
 DB は別プロセス不要の in-process embedded。 起動時 `AUTO_MIGRATE_ENABLED=true` で `migrations/*.surql` を
 listen 前に適用する。
 
 **build 要件 (system tools)**: `protoc` (club-unison の protobuf build に必須) / `clang`
-(surrealdb kv-rocksdb の `librocksdb-sys` bindgen に必須)。 未導入だと build script が失敗する。
+(SurrealKV の旧 RocksDB 互換ライブラリの bindgen に必須)。 未導入だと build script が失敗する。
 
 ```bash
 # macOS (Homebrew)
@@ -76,8 +76,17 @@ env (DB/migration): `CHRONISTA_HUB_PORT` (default 3000) / `SURREALDB_NAMESPACE` 
 `CHRONISTA_HUB_DB_PATH` (DB_URL 未設定時の RocksDB dir) / `AUTO_MIGRATE_ENABLED` /
 `MIGRATIONS_DIR` (default `./migrations`)。
 
-DB 接続先 (ADR-022): `CHRONISTA_HUB_DB_URL` が `rocksdb://<dir>` なら embedded、 `ws://host:port`
-なら remote。 未設定時は `rocksdb://$CHRONISTA_HUB_DB_PATH` (default `./data/hub.rocksdb`)。
+DB 接続先 (ADR-022): `CHRONISTA_HUB_DB_URL` が `surrealkv://<dir>` または旧 `rocksdb://<dir>` なら
+embedded、`ws://host:port` なら remote。未設定時は `rocksdb://$CHRONISTA_HUB_DB_PATH`
+(default `./data/hub.rocksdb`)。旧 URL を含め、新規 DB は SurrealKV になる。
+
+既存の 3.x embedded DB は、この版への image 更新だけでは移行できない。旧 scratch は維持し、
+コピー上での移行検証を別途行う。live の remote client 更新とは分けて扱う。
+
+SDK 互換性は `bash scripts/test-db-compat.sh` で 3.3.4 / 4.0.0 の使い捨て DB に対して検証する
+(Docker が必要。Podman は `CONTAINER_ENGINE=podman` を指定)。embedded debug テストは
+`.cargo/config.toml` で上流同様に 24 MB のスレッドスタックを確保する。この設定は配布 image に渡さない。
+アプリ自身は Tokio worker を debug 24 MB / release 10 MB で起動する。
 remote の signin は `SURREALDB_USERNAME` / `SURREALDB_PASSWORD` / `SURREALDB_AUTH_LEVEL`
 (`database` default / `namespace` / `root`)。
 

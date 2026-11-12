@@ -5,13 +5,16 @@
 //! 宣言 → 後続 frame が target の server-initiated stream に同順で届く」までを通す。
 //! QUIC 経路はそれまで `examples/` にしか無く CI が実行していなかったので、 ここで常時回す。
 
+mod common;
+use common::connect_test;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use chronista_hub_server::auth::StubVerifier;
 use chronista_hub_server::config::UnisonCert;
-use chronista_hub_server::db::{connect_mem, run_pending_migrations};
+use chronista_hub_server::db::run_pending_migrations;
 use chronista_hub_server::storage::Storage;
 use chronista_hub_server::unison_server::spawn_unison;
 use serde_json::{Value, json};
@@ -27,7 +30,7 @@ async fn spawn_hub() -> Result<(ServerHandle, String)> {
     // aws-lc-rs と ring が両方 graph に居て rustls が provider を auto-detect できないので、
     // main.rs と同じく ring を明示する。 test は同一 process で並走するので二重 install は無視。
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let db = connect_mem("chronista", "hub").await?;
+    let db = connect_test("chronista", "hub").await?;
     run_pending_migrations(
         &db,
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations"),

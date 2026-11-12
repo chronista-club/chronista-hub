@@ -1,4 +1,4 @@
-//! DB 接続の URL 切替 (ADR-022) — `rocksdb://` (embedded 永続) と `ws://` (remote)。
+//! DB 接続 (ADR-022) — `surrealkv://` / 旧 `rocksdb://` (新規 embedded) と `ws://`。
 //!
 //! remote は実 SurrealDB が要るので `CHRONISTA_HUB_SURREAL_TEST_URL` で gate する
 //! (未設定なら skip)。 手元では:
@@ -44,30 +44,44 @@ fn unique_tmp_dir(label: &str) -> PathBuf {
 }
 
 #[tokio::test]
-async fn rocksdb_url_writes_to_disk() {
-    // 再起動をまたぐ永続化は scripts/e2e.sh が実プロセスの再起動で検証する。 embedded engine は
-    // drop 後も同一プロセス内では RocksDB の LOCK をすぐ手放さないので、 ここでは開き直さない。
-    let dir = unique_tmp_dir("rocksdb");
-    let url = format!("rocksdb://{}", dir.display());
+async fn embedded_urls_persist_across_reopen() {
+    // SDK 4 の保存先は SurrealKV。旧 URL も alias として受理される。
+    // 内部ファイル名ではなく、終了・開き直し後にも値と migration 履歴が残ることを確認する。
+    for scheme in ["surrealkv", "rocksdb"] {
+        let dir = unique_tmp_dir(scheme);
+        let url = format!("{scheme}://{}", dir.display());
+        let db = connect(&url, None, "chronista", "hub").await.unwrap();
+        let applied = run_pending_migrations(&db, migrations_dir()).await.unwrap();
+        assert_eq!(applied.len(), migration_count());
+        db.conn()
+            .query("CREATE persistence_probe:one SET marker = 'persisted'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        db.conn().shutdown().await.unwrap();
+        drop(db);
 
-    let db = connect(&url, None, "chronista", "hub").await.unwrap();
-    let applied = run_pending_migrations(&db, migrations_dir()).await.unwrap();
-    assert_eq!(
-        applied.len(),
-        migration_count(),
-        "fresh DB applies all migrations: {applied:?}"
-    );
-    let again = run_pending_migrations(&db, migrations_dir()).await.unwrap();
-    assert!(again.is_empty(), "migrations re-applied: {again:?}");
-
-    // mem ではなく rocksdb engine で開かれた証拠 = 指定 dir に RocksDB の実体がある。
-    assert!(
-        dir.join("CURRENT").exists(),
-        "no RocksDB files under {dir:?}"
-    );
-
-    drop(db);
-    let _ = std::fs::remove_dir_all(&dir);
+        let reopened = connect(&url, None, "chronista", "hub").await.unwrap();
+        let again = run_pending_migrations(&reopened, migrations_dir())
+            .await
+            .unwrap();
+        assert!(
+            again.is_empty(),
+            "{scheme}: migrations re-applied: {again:?}"
+        );
+        let markers: Vec<String> = reopened
+            .conn()
+            .query("SELECT VALUE marker FROM persistence_probe")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(markers, vec!["persisted"], "{scheme}");
+        reopened.conn().shutdown().await.unwrap();
+        drop(reopened);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 #[tokio::test]

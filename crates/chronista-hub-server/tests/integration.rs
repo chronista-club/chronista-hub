@@ -1,5 +1,8 @@
-//! 統合テスト — embedded SurrealDB (Mem / RocksDB) に対して migration + storage +
-//! event_log + consumer + HTTP API を検証。 別プロセス不要 (in-process embedded)。
+//! 統合テスト — migration + storage + event_log + consumer + HTTP API。
+//! 既定は embedded Mem。使い捨て remote DB でも同じ振る舞いを検証する (common 参照)。
+
+mod common;
+use common::connect_test;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -9,7 +12,7 @@ use axum::http::{Request, StatusCode};
 use chronista_hub_server::app::{AppState, build_router};
 use chronista_hub_server::auth::StubVerifier;
 use chronista_hub_server::consumer::{spawn_consumer, tick};
-use chronista_hub_server::db::{connect_mem, run_pending_migrations};
+use chronista_hub_server::db::run_pending_migrations;
 use chronista_hub_server::event_log::EventLog;
 use chronista_hub_server::model::{EventEnvelope, EventKind, Resource, Visibility};
 use chronista_hub_server::product_token::ProductTokenStore;
@@ -46,8 +49,8 @@ fn sample_event(event_id: &str, idem: &str, res: Resource) -> EventEnvelope {
     }
 }
 
-async fn setup_mem() -> (Storage, EventLog, ProductTokenStore) {
-    let db = connect_mem("chronista", "hub").await.unwrap();
+async fn setup_test() -> (Storage, EventLog, ProductTokenStore) {
+    let db = connect_test("chronista", "hub").await.unwrap();
     let applied = run_pending_migrations(&db, migrations_dir()).await.unwrap();
     let expected = std::fs::read_dir(migrations_dir())
         .unwrap()
@@ -68,7 +71,7 @@ async fn setup_mem() -> (Storage, EventLog, ProductTokenStore) {
 
 #[tokio::test]
 async fn migrations_seed_reserved_handles() {
-    let db = connect_mem("chronista", "hub").await.unwrap();
+    let db = connect_test("chronista", "hub").await.unwrap();
     run_pending_migrations(&db, migrations_dir()).await.unwrap();
     // 2 回目は冪等 (pending 0)
     let again = run_pending_migrations(&db, migrations_dir()).await.unwrap();
@@ -92,7 +95,7 @@ async fn migrations_seed_reserved_handles() {
 
 #[tokio::test]
 async fn storage_crud() {
-    let (storage, _log, _pt) = setup_mem().await;
+    let (storage, _log, _pt) = setup_test().await;
     let opts = TreeReadOptions::default();
 
     storage
@@ -168,7 +171,7 @@ async fn storage_crud() {
 
 #[tokio::test]
 async fn node_register_discover_unregister() {
-    let (storage, _log, _pt) = setup_mem().await;
+    let (storage, _log, _pt) = setup_test().await;
 
     // register: node_id keyed (ADR-020 §S2)。 owner 無し (未認証 permissive) = public。
     let reg_at = storage
@@ -218,7 +221,7 @@ async fn node_register_discover_unregister() {
 /// 返し、 他人の private node は存在ごと見えない。 Unregister は owner guard。
 #[tokio::test]
 async fn node_owner_visibility_isolation() {
-    let (storage, _log, _pt) = setup_mem().await;
+    let (storage, _log, _pt) = setup_test().await;
 
     // user A: private node (認証済み登録の default)
     storage
@@ -325,7 +328,7 @@ async fn node_owner_visibility_isolation() {
 /// (owner/endpoints/visibility の上書き防止)。 未認証・App も owned node を消せない。
 #[tokio::test]
 async fn node_register_hijack_and_delete_guards() {
-    let (storage, _log, _pt) = setup_mem().await;
+    let (storage, _log, _pt) = setup_test().await;
 
     // A が private node を owner 登録
     storage
@@ -427,7 +430,7 @@ async fn node_register_hijack_and_delete_guards() {
 /// 隠す。 product resource (type != vp-node) は private でも従来通り読める (guard 非対象)。
 #[tokio::test]
 async fn rest_read_hides_nonpublic_vp_nodes() {
-    let (storage, _log, _pt) = setup_mem().await;
+    let (storage, _log, _pt) = setup_test().await;
     let opts = TreeReadOptions::default();
 
     // 同じ handle の下に public / private の vp-node + private の product resource
@@ -516,7 +519,7 @@ async fn rest_read_hides_nonpublic_vp_nodes() {
 /// 未認証 REST から漏れる (2026-10-08 live で 19 件の露出を確認・削除済み)。
 #[tokio::test]
 async fn rest_read_hides_nonpublic_legacy_vp_world_rows() {
-    let (storage, _log, _pt) = setup_mem().await;
+    let (storage, _log, _pt) = setup_test().await;
     let opts = TreeReadOptions::default();
 
     let legacy = |id: &str, visibility| Resource {
@@ -578,7 +581,7 @@ async fn rest_read_hides_nonpublic_legacy_vp_world_rows() {
 
 #[tokio::test]
 async fn event_log_append_and_dedup() {
-    let (_storage, log, _pt) = setup_mem().await;
+    let (_storage, log, _pt) = setup_test().await;
     let res = sample_resource("atlas_1", "mito");
 
     assert!(
@@ -612,7 +615,7 @@ async fn event_log_append_and_dedup() {
 
 #[tokio::test]
 async fn event_log_dlq_after_max_retries() {
-    let (_storage, log, _pt) = setup_mem().await;
+    let (_storage, log, _pt) = setup_test().await;
     log.append(&sample_event("ev_x", "ix", sample_resource("a", "mito")))
         .await
         .unwrap();
@@ -630,7 +633,7 @@ async fn event_log_dlq_after_max_retries() {
 
 #[tokio::test]
 async fn consumer_applies_event_to_storage() {
-    let (storage, log, _pt) = setup_mem().await;
+    let (storage, log, _pt) = setup_test().await;
     log.append(&sample_event(
         "ev_1",
         "i1",
@@ -648,7 +651,7 @@ async fn consumer_applies_event_to_storage() {
 
 #[tokio::test]
 async fn http_publish_then_read() {
-    let (storage, log, product_tokens) = setup_mem().await;
+    let (storage, log, product_tokens) = setup_test().await;
     let consumer = spawn_consumer(log.clone(), storage.clone(), 50);
     let state = AppState {
         storage,
@@ -748,7 +751,7 @@ async fn http_publish_then_read() {
 
 #[tokio::test]
 async fn product_token_issue_verify_revoke() {
-    let (_storage, _log, pt) = setup_mem().await;
+    let (_storage, _log, pt) = setup_test().await;
 
     let issued = pt
         .issue(
@@ -788,7 +791,7 @@ async fn product_token_issue_verify_revoke() {
 
 #[tokio::test]
 async fn product_token_rotate_overlap() {
-    let (_storage, _log, pt) = setup_mem().await;
+    let (_storage, _log, pt) = setup_test().await;
 
     let old = pt
         .issue("vp", &["register_resource".into()], None, None)
@@ -818,7 +821,7 @@ async fn product_token_rotate_overlap() {
 
 #[tokio::test]
 async fn admin_endpoints_gated_and_issue_flow() {
-    let (storage, log, product_tokens) = setup_mem().await;
+    let (storage, log, product_tokens) = setup_test().await;
 
     // --- admin_key 未設定 → 管理 API は 404 (存在ごと隠す) ---
     let state_no_admin = AppState {
@@ -977,7 +980,7 @@ async fn admin_endpoints_gated_and_issue_flow() {
 
 #[tokio::test]
 async fn product_token_rotate_inherits_scopes_when_empty() {
-    let (_storage, _log, pt) = setup_mem().await;
+    let (_storage, _log, pt) = setup_test().await;
 
     pt.issue(
         "gfp",

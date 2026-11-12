@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # librocksdb-sys (surrealdb kv-rocksdb) の bindgen は libclang を、
+      # SurrealKV の旧 RocksDB 互換ライブラリの bindgen は libclang を、
       # club-unison の build script (buffa/protobuf) は protoc を要求する。
       - name: Install system deps
         run: sudo apt-get update && sudo apt-get install -y clang protobuf-compiler
@@ -37,4 +37,10 @@ jobs:
         run: cargo build --all-targets
 
       - name: test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
+
+      - name: SurrealDB 3.3.4 / 4.0.0 compatibility
+        run: bash scripts/test-db-compat.sh
+
+      - name: Embedded process restart persistence
+        run: bash scripts/e2e.sh

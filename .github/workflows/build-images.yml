@@ -17,6 +17,8 @@ on:
       - ".dockerignore"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".cargo/**"
+      - "scripts/smoke-image.sh"
       - "crates/**"
       - "migrations/**"
       - ".github/workflows/build-images.yml"
@@ -26,6 +28,8 @@ on:
       - ".dockerignore"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".cargo/**"
+      - "scripts/smoke-image.sh"
       - "crates/**"
       - "migrations/**"
       - ".github/workflows/build-images.yml"
@@ -69,8 +73,14 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
+          load: true
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Release image persistence smoke
+        env:
+          IMAGE_TAG: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+        run: bash scripts/smoke-image.sh "$IMAGE_TAG"

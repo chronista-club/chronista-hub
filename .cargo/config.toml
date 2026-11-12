@@ -1,0 +1,5 @@
+[env]
+# SurrealDB 4 embedded の debug engine は libtest の既定 2 MiB を超える。
+# upstream surrealdb-core tests/it/helpers::with_enough_stack と同じ debug 用サイズ。
+# Cargo が起動する test/run のみに適用。container の実行環境には持ち込まない。
+RUST_MIN_STACK = "24000000"

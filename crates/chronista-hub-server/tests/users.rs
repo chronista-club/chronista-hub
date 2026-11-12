@@ -9,6 +9,9 @@
 //!   旧 handle は 100 日間本人のために取り置き + 新しい住所へ案内、 30 日の cooldown)
 //! - `GET /v1/users/@{handle}`: 公開。 usr_id / handle / display_name だけ
 
+mod common;
+use common::connect_test;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,7 +20,7 @@ use axum::http::{Request, StatusCode};
 use base64::Engine;
 use chronista_hub_server::app::{AppState, build_router};
 use chronista_hub_server::auth::StubVerifier;
-use chronista_hub_server::db::{connect_mem, run_pending_migrations};
+use chronista_hub_server::db::run_pending_migrations;
 use chronista_hub_server::event_log::EventLog;
 use chronista_hub_server::product_token::ProductTokenStore;
 use chronista_hub_server::storage::Storage;
@@ -31,7 +34,7 @@ async fn router() -> axum::Router {
 
 /// 時間を進めるテスト (取り置きの期限、 cooldown) は DB を直接いじるので db も返す。
 async fn router_with_db() -> (axum::Router, chronista_hub_server::db::Db) {
-    let db = connect_mem("chronista", "hub").await.unwrap();
+    let db = connect_test("chronista", "hub").await.unwrap();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
     run_pending_migrations(&db, &dir).await.unwrap();
     let r = build_router(AppState {
@@ -107,7 +110,7 @@ async fn me_needs_a_user_token() {
 }
 
 async fn fresh_db() -> chronista_hub_server::db::Db {
-    let db = connect_mem("chronista", "hub").await.unwrap();
+    let db = connect_test("chronista", "hub").await.unwrap();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
     run_pending_migrations(&db, &dir).await.unwrap();
     db
